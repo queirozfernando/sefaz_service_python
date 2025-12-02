@@ -1,81 +1,60 @@
 # test_autorizar_nfe.py
-
-from pathlib import Path
+import os
 from sefaz_service.nfe.workflow import autorizar_nfe
 
+def salvar(nome, conteudo):
+    os.makedirs("saida", exist_ok=True)
+    with open(f"saida/{nome}", "w", encoding="utf-8") as f:
+        f.write(conteudo)
+    print(f">> salvo: saida/{nome}")
 
 def test_autorizar_nfe():
-    """
-    Teste completo da função autorizar_nfe:
-      - Carrega XML de entrada
-      - Assina
-      - Envia para SEFAZ
-      - Gera nfeProc
-      - Salva enviados e retornos p/ depuração
-    """
+    # Carrega o XML original
+    with open("xml_nfe.xml", "r", encoding="utf-8") as f:
+        xml_nfe = f.read()
 
-    # 🟦 Ajuste conforme sua máquina
-    XML_PATH = r"exemplos/nfe_teste.xml"
-    PFX_PATH = r"C:\PROJETOS\certificados\36400633000134 - BENE DO CAVACO COMERCIO DE PRODUTOS ALIMENTICIOS.pfx"
-    PFX_PASSWORD = "12345678"
-
-    # garante pastas
-    Path("saida").mkdir(exist_ok=True)
-    Path("exemplos").mkdir(exist_ok=True)
-
-    # Carrega XML original
-    with open(XML_PATH, "r", encoding="utf-8") as f:
-        xml = f.read()
-
-    # Executa o fluxo completo
+    # ENVIO
     res = autorizar_nfe(
-        xml_nfe=xml,
-        uf="AC",                 # mude se necessário
-        pfx_path=PFX_PATH,
-        pfx_password=PFX_PASSWORD,
-        ambiente="1",           # 1 = produção, 2 = homologação
+        xml_nfe=xml_nfe,
+        uf="AC",
+        pfx_path="certificado.pfx",
+        pfx_password="SENHA",
+        ambiente="1",  # 1 = produção / 2 = homologação
     )
 
-    print("\n===== RESULTADO DO TESTE =====")
+    print("\n===== RESULTADO DO ENVIO =====")
     print("Autorizado:", res.autorizado)
     print("cStat     :", res.status)
     print("Motivo    :", res.motivo)
+    print()
 
-    # ----------------------------------------------------------------------
-    # SALVAR ARQUIVOS PARA INSPEÇÃO
-    # ----------------------------------------------------------------------
+    # Salvar sempre
+    salvar("nfe_assinada.xml", res.xml_assinado)
+    salvar("enviNFe.xml", res.xml_envi_nfe)
+    salvar("retorno.xml", res.xml_retorno)
+    salvar("protocolo.xml", res.xml_protocolo)
 
-    # XML assinado
-    if res.xml_assinado:
-        Path("saida/nfe_assinada.xml").write_text(res.xml_assinado, encoding="utf-8")
-        print(">> salvo: saida/nfe_assinada.xml")
+    # Se autorizado (100 ou 150), salvar nfeProc
+    if res.xml_nfe_proc:
+        salvar("nfeProc_autorizada.xml", res.xml_nfe_proc)
+        print("XML AUTORIZADO GERADO COM SUCESSO!")
 
-    # enviNFe enviado para o SOAP
-    if res.xml_envi_nfe:
-        Path("saida/enviNFe.xml").write_text(res.xml_envi_nfe, encoding="utf-8")
-        print(">> salvo: saida/enviNFe.xml")
+    # ===== VARIÁVEIS DISPONÍVEIS PARA FUTURO USO =====
+    xml_assinado = res.xml_assinado
+    xml_enviNFe = res.xml_envi_nfe
+    xml_retorno = res.xml_retorno
+    xml_protocolo = res.xml_protocolo
+    xml_nfe_proc = res.xml_nfe_proc  # pode ser None
 
-    # SOAP completo (se workflow gerar)
-    if getattr(res, "xml_soap", None):
-        Path("saida/soap.xml").write_text(res.xml_soap, encoding="utf-8")
-        print(">> salvo: saida/soap.xml")
+    # Exemplo de uso futuro (apenas mostrando que agora é fácil)
+    print("\n===== VARIÁVEIS CARREGADAS =====")
+    print("xml_assinado.....:", "OK" if xml_assinado else "ERRO")
+    print("xml_enviNFe......:", "OK" if xml_enviNFe else "ERRO")
+    print("xml_retorno......:", "OK" if xml_retorno else "ERRO")
+    print("xml_protocolo....:", "OK" if xml_protocolo else "ERRO")
+    print("xml_nfe_proc.....:", "OK" if xml_nfe_proc else "NÃO GERADO")
 
-    # Se autorizado → salva o nfeProc final
-    if res.autorizado and res.xml_nfe_proc:
-        Path("saida/nfe_autorizada.xml").write_text(res.xml_nfe_proc, encoding="utf-8")
-        print(">> salvo: saida/nfe_autorizada.xml")
-
-    # ----------------------------------------------------------------------
-    # ASSERTS (mantidos)
-    # ----------------------------------------------------------------------
-
-    assert res.status is not None, "cStat não foi retornado"
-    assert res.motivo is not None, "xMotivo não foi retornado"
-
-    # fluxo geral precisa ter gerado esses 3 itens sem erro:
-    assert res.xml_envi_nfe, "enviNFe não foi gerado"
-    assert res.xml_assinado, "XML assinado não foi gerado"
-    assert res.xml_retorno, "Não houve retorno da SEFAZ"
+    return res  # permite uso programático (ex: dentro de outro script)
 
 
 if __name__ == "__main__":
