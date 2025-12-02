@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Ambiente virtual
+venv/
+env/
+
+# Arquivos de saída
+saida/
+
+# Certificados e dados sensíveis
+*.pfx
+*.pem
+
+# Arquivos de teste
+test_autorizar_nfe.py
