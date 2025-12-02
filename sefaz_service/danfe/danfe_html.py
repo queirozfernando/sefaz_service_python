@@ -105,7 +105,6 @@ def _gerar_barcode_base64(chave: str) -> Optional[str]:
     try:
         code128 = barcode.get("code128", digits, writer=ImageWriter())
         buf = BytesIO()
-        # módulo mais largo e um pouco mais alto
         code128.write(
             buf,
             options={
@@ -124,17 +123,17 @@ def gerar_danfe_html(
     logo_url: Optional[str] = None,
 ) -> str:
     """
-    Gera um DANFE (layout clássico retrato) em HTML a partir do XML nfeProc.
-    Com suporte a múltiplas páginas:
-      - Primeira folha: tudo (inclusive canhoto, inf. compl., pagamento).
-      - Demais folhas: cabeçalho + até TRANSPORTE + somente itens.
+    Gera um DANFE (layout retrato) em HTML a partir do XML nfeProc.
+
+    - 1ª folha: canhoto + cabeçalho completo + FATURA/DUPLICATAS +
+      TRANSPORTADOR + itens + INF. COMPL./PAGAMENTO.
+    - Demais folhas: cabeçalho até NATUREZA DA OPERAÇÃO + itens.
     """
     parser = etree.XMLParser(remove_blank_text=True)
     root = etree.fromstring(xml_nfe_proc.encode("utf-8"), parser=parser)
 
     ns = {"nfe": NFE_NS}
 
-    # Localiza NFe e protNFe
     nfe_el = root.find("nfe:NFe", ns)
     prot_el = root.find("nfe:protNFe", ns)
 
@@ -159,7 +158,6 @@ def gerar_danfe_html(
     dh_emi = _get_text(ide, "nfe:dhEmi", ns)
     dh_saida = _get_text(ide, "nfe:dhSaiEnt", ns)
     nat_op = _get_text(ide, "nfe:natOp", ns)
-    modelo = _get_text(ide, "nfe:mod", ns)
     tp_amb = _get_text(ide, "nfe:tpAmb", ns)
     tp_nf = _get_text(ide, "nfe:tpNF", ns)
 
@@ -169,7 +167,6 @@ def gerar_danfe_html(
         return iso
 
     data_emi_iso = _so_data(dh_emi)
-    data_saida_iso = _so_data(dh_saida) if dh_saida else ""
     data_emi_br = _format_data_br(dh_emi)
     data_saida_br = _format_data_br(dh_saida)
 
@@ -290,7 +287,7 @@ def gerar_danfe_html(
             t_pag = _get_text(det_pag, "nfe:tPag", ns)
             v_pag = _get_text(det_pag, "nfe:vPag", ns)
 
-    # tabela atualizada de formas de pagamento
+    # Tabela atualizada de formas de pagamento
     t_pag_map = {
         "01": "DINHEIRO",
         "02": "CHEQUE",
@@ -312,8 +309,26 @@ def gerar_danfe_html(
     }
     t_pag_desc = t_pag_map.get(t_pag, t_pag)
 
+    # ----- FATURA / DUPLICATAS -----
+    duplicatas: List[dict] = []
+    cobr = inf_nfe.find("nfe:cobr", ns)
+    if cobr is not None:
+        for dup in cobr.findall("nfe:dup", ns):
+            n_dup = _get_text(dup, "nfe:nDup", ns)
+            d_venc = _get_text(dup, "nfe:dVenc", ns)
+            v_dup = _get_text(dup, "nfe:vDup", ns)
+            duplicatas.append(
+                {
+                    "nDup": n_dup,
+                    "dVenc": _format_data_br(d_venc),
+                    "vDup": v_dup,
+                }
+            )
+
     # ----- INF. ADICIONAIS -----
-    inf_cpl = _get_text(inf_adic, "nfe:infCpl", ns)
+    inf_cpl_raw = _get_text(inf_adic, "nfe:infCpl", ns)
+    inf_cpl = _format_inf_cpl(inf_cpl_raw)
+
 
     # ----- ITENS -----
     itens: List[dict] = []
@@ -356,8 +371,9 @@ def gerar_danfe_html(
     texto_ambiente = "PRODUÇÃO" if tp_amb == "1" else "HOMOLOGAÇÃO"
 
     # ---------- PAGINAÇÃO DOS ITENS ----------
-    MAX_ITENS_PRIMEIRA = 20
-    MAX_ITENS_DEMAIS = 40
+    # Menos itens na 1ª página por causa de FATURA/DUPLICATAS + rodapé
+    MAX_ITENS_PRIMEIRA = 23
+    MAX_ITENS_DEMAIS = 50
 
     pages_itens: List[List[dict]] = []
     if len(itens) <= MAX_ITENS_PRIMEIRA:
@@ -381,7 +397,7 @@ def gerar_danfe_html(
             background-color: #cccccc;
         }
         .page {
-            width: 794px;      /* aprox. A4 em 96dpi */
+            width: 794px;
             min-height: 1123px;
             margin: 8px auto;
             background-color: #ffffff;
@@ -431,6 +447,16 @@ def gerar_danfe_html(
         }
         .itens th {
             background-color: #f5f5f5;
+        }
+        .dup-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 2px;
+        }
+        .dup-table th, .dup-table td {
+            border: 1px solid #000;
+            padding: 2px;
+            font-size: 8px;
         }
         .chave-acesso {
             font-size: 8px;
@@ -538,7 +564,43 @@ def gerar_danfe_html(
 <hr class="corte" />
 """
 
-    def _html_cabecalho(num_folha: int, total_folhas: int) -> str:
+    def _html_fatura_dup() -> str:
+        # até 6 parcelas, reservando espaço mesmo se não houver dados
+        max_parc = 6
+        cells = ""
+        for i in range(max_parc):
+            if i < len(duplicatas):
+                d = duplicatas[i]
+                cells += f"""
+                    <td style="vertical-align:top;min-height:32px;">
+                        <div>Nº: {d["nDup"]}</div>
+                        <div>Venc: {d["dVenc"]}</div>
+                        <div>Valor: {d["vDup"]}</div>
+                    </td>
+                """
+            else:
+                cells += """
+                    <td style="vertical-align:top;min-height:32px;">
+                        <div>&nbsp;</div>
+                        <div>&nbsp;</div>
+                        <div>&nbsp;</div>
+                    </td>
+                """
+
+        return f"""
+    <div class="linha">
+        <div class="box" style="flex: 3;">
+            <div class="titulo">FATURA/DUPLICATAS</div>
+            <table class="dup-table">
+                <tr>
+                    {cells}
+                </tr>
+            </table>
+        </div>
+    </div>
+"""
+
+    def _html_cabecalho(num_folha: int, total_folhas: int, completo: bool) -> str:
         # Linha 1 – Emitente / DANFE / Chave
         h = f"""
 <div class="danfe-container">
@@ -602,7 +664,7 @@ def gerar_danfe_html(
         </div>
     </div>
 """
-        # Natureza da operação
+        # Natureza da operação (sempre)
         h += f"""
     <div class="linha">
         <div class="box" style="flex: 3;">
@@ -611,7 +673,12 @@ def gerar_danfe_html(
         </div>
     </div>
 """
-        # Destinatário + datas ao lado direito
+
+        if not completo:
+            # Nas folhas seguintes paramos aqui
+            return h
+
+        # DESTINATÁRIO + datas (apenas na 1ª folha)
         h += f"""
     <div class="linha">
         <div class="box" style="flex: 3;">
@@ -636,7 +703,8 @@ def gerar_danfe_html(
         </div>
     </div>
 """
-        # Cálculo do imposto
+
+        # CÁLCULO DO IMPOSTO
         h += f"""
     <div class="linha">
         <div class="box" style="flex: 3;">
@@ -698,7 +766,8 @@ def gerar_danfe_html(
         </div>
     </div>
 """
-        # Transportador
+
+        # TRANSPORTADOR / VOLUMES
         h += f"""
     <div class="linha">
         <div class="box" style="flex: 3;">
@@ -706,68 +775,86 @@ def gerar_danfe_html(
             <div class="linha">
                 <div class="box" style="flex:2;">
                     <div class="titulo">NOME/RAZÃO SOCIAL</div>
-                    <div class="conteudo">{transp_nome}</div>
+                    <div class="conteudo" style="min-height:14px;">{transp_nome}</div>
                 </div>
                 <div class="box" style="flex:1;">
                     <div class="titulo">FRETE POR CONTA</div>
-                    <div class="conteudo">{mod_frete_desc}</div>
+                    <div class="conteudo" style="min-height:14px;">{mod_frete_desc}</div>
                 </div>
                 <div class="box" style="flex:1;">
                     <div class="titulo">CNPJ/CPF</div>
-                    <div class="conteudo">{transp_cnpj}</div>
+                    <div class="conteudo" style="min-height:14px;">{transp_cnpj}</div>
                 </div>
                 <div class="box" style="flex:1;">
                     <div class="titulo">INSCRIÇÃO ESTADUAL</div>
-                    <div class="conteudo">{transp_ie}</div>
+                    <div class="conteudo" style="min-height:14px;">{transp_ie}</div>
                 </div>
             </div>
             <div class="linha">
                 <div class="box" style="flex:2;">
                     <div class="titulo">ENDEREÇO</div>
-                    <div class="conteudo">{transp_ender}</div>
+                    <div class="conteudo" style="min-height:18px;">{transp_ender}</div>
                 </div>
                 <div class="box" style="flex:1;">
                     <div class="titulo">MUNICÍPIO</div>
-                    <div class="conteudo">{transp_mun}</div>
+                    <div class="conteudo" style="min-height:18px;">{transp_mun}</div>
                 </div>
                 <div class="box" style="flex:0.5;">
                     <div class="titulo">UF</div>
-                    <div class="conteudo">{transp_uf}</div>
+                    <div class="conteudo" style="min-height:18px;">{transp_uf}</div>
                 </div>
                 <div class="box" style="flex:0.8;">
                     <div class="titulo">QUANTIDADE</div>
-                    <div class="conteudo">{vol_qtd}</div>
+                    <div class="conteudo" style="min-height:18px;">{vol_qtd}</div>
                 </div>
                 <div class="box" style="flex:0.8;">
                     <div class="titulo">PESO BRUTO</div>
-                    <div class="conteudo">{vol_peso_b}</div>
+                    <div class="conteudo" style="min-height:18px;">{vol_peso_b}</div>
                 </div>
                 <div class="box" style="flex:0.8;">
                     <div class="titulo">PESO LÍQUIDO</div>
-                    <div class="conteudo">{vol_peso_l}</div>
+                    <div class="conteudo" style="min-height:18px;">{vol_peso_l}</div>
                 </div>
             </div>
         </div>
     </div>
 """
+
+        # FATURA / DUPLICATAS (apenas na 1ª folha, logo depois do transportador)
+        h += _html_fatura_dup()
+
         return h
 
     def _html_inf_compl_pagamento() -> str:
+        altura = "80px"  # altura dos boxes
+
         return f"""
-    <div class="linha">
-        <div class="box" style="flex: 2;">
-            <div class="titulo">INFORMAÇÕES COMPLEMENTARES</div>
-            <div class="conteudo small">{inf_cpl}</div>
-        </div>
-        <div class="box" style="flex: 1;">
-            <div class="titulo">PAGAMENTO</div>
-            <div class="conteudo small">
-                Forma: {t_pag_desc}<br/>
-                Valor: {v_pag}
+        <div class="linha" style="margin-top:6px;">
+            <div class="box"
+                 style="flex: 2;
+                        min-height:{altura};
+                        display:flex;
+                        flex-direction:column;
+                        justify-content:flex-start;">
+                <div class="titulo" style="font-size:9px;">INFORMAÇÕES COMPLEMENTARES</div>
+                <div class="conteudo" style="font-size:8px; margin-top:4px;">
+                    {inf_cpl}
+                </div>
+            </div>
+            <div class="box"
+                 style="flex: 1;
+                        min-height:{altura};
+                        display:flex;
+                        flex-direction:column;
+                        justify-content:flex-start;">
+                <div class="titulo" style="font-size:9px;">PAGAMENTO</div>
+                <div class="conteudo" style="font-size:8px; margin-top:4px;">
+                    Forma: {t_pag_desc}<br/>
+                    Valor: {v_pag}
+                </div>
             </div>
         </div>
-    </div>
-"""
+    """
 
     def _html_inicio_tabela_itens() -> str:
         return """
@@ -815,24 +902,23 @@ def gerar_danfe_html(
         partes.append('<div class="page">\n')
 
         primeira = idx_pagina == 1
-        ultima = idx_pagina == total_paginas
 
-        # Canhoto apenas na primeira folha
+        # Canhoto só na 1ª folha
         if primeira:
             partes.append(_html_canhoto())
 
-        # Cabeçalho comum a todas as folhas
-        partes.append(_html_cabecalho(idx_pagina, total_paginas))
+        # Cabeçalho: completo na 1ª, reduzido nas demais (até natureza)
+        partes.append(
+            _html_cabecalho(
+                num_folha=idx_pagina,
+                total_folhas=total_paginas,
+                completo=primeira,
+            )
+        )
 
-        # Mostrar INF. COMPLEMENTARES / PAGAMENTO
-        # apenas na primeira folha (como você pediu)
-        if primeira:
-            partes.append(_html_inf_compl_pagamento())
-
-        # Tabela de itens da página atual
+        # Tabela de itens
         partes.append(_html_inicio_tabela_itens())
 
-        # Quantidade máxima nesta página (só para preencher linhas em branco)
         max_itens_pag = MAX_ITENS_PRIMEIRA if primeira else MAX_ITENS_DEMAIS
 
         for it in itens_pagina:
@@ -857,7 +943,6 @@ def gerar_danfe_html(
 """
             )
 
-        # Linhas em branco para completar a página
         linhas_vazias = max(0, max_itens_pag - len(itens_pagina))
         for _ in range(linhas_vazias):
             partes.append(
@@ -883,7 +968,11 @@ def gerar_danfe_html(
 
         partes.append(_html_fim_tabela_itens())
 
-        # Rodapé com série/folha em todas as páginas
+        # INF. COMPLEMENTARES / PAGAMENTO só na 1ª folha e DEPOIS da tabela
+        if primeira:
+            partes.append(_html_inf_compl_pagamento())
+
+        # Rodapé em todas as páginas
         partes.append(
             f"""
     <div class="rodape">
@@ -898,3 +987,22 @@ def gerar_danfe_html(
     partes.append("</body>\n</html>\n")
 
     return "".join(partes)
+
+
+def _format_inf_cpl(text: str) -> str:
+    """
+    Quebra o infCpl a cada ';' e volta como HTML com <br/>.
+    Mantém o ';' no final de cada linha.
+    """
+    if not text:
+        return ""
+
+    partes = [p.strip() for p in text.split(";")]
+    partes = [p for p in partes if p]  # remove vazias
+
+    if not partes:
+        return ""
+
+    # junta de volta, recolocando ';' e quebra de linha
+    return ";<br/>".join(partes)
+

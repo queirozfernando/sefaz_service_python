@@ -4,14 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="6e5c8189-cd77-445c-a277-d0fd759cf677" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/sefaz_service/core/protocolo.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_service/danfe/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_service/danfe/danfe_html.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_danfe.py" afterDir="false" />
+    <list default="true" id="6e5c8189-cd77-445c-a277-d0fd759cf677" name="Changes" comment="ajustes na nfe">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/sefaz_service/core/nfe_autorizado.py" beforeDir="false" afterPath="$PROJECT_DIR$/sefaz_service/core/nfe_autorizado.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/test_autorizar_nfe.py" beforeDir="false" afterPath="$PROJECT_DIR$/test_autorizar_nfe.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/sefaz_service/danfe/danfe_html.py" beforeDir="false" afterPath="$PROJECT_DIR$/sefaz_service/danfe/danfe_html.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -104,6 +99,19 @@
       <option name="presentableId" value="Default" />
       <updated>1764410238630</updated>
     </task>
+    <task id="LOCAL-00001" summary="ajustes na nfe">
+      <option name="closed" value="true" />
+      <created>1764689803381</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1764689803381</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="ajustes na nfe" />
+    <option name="LAST_COMMIT_MESSAGE" value="ajustes na nfe" />
   </component>
 </project>
