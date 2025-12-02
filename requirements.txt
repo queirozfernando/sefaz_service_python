@@ -1,0 +1,6 @@
+lxml
+signxml
+cryptography
+requests
+requests-pkcs12
+zeep
