@@ -1,6 +1,9 @@
 # test_danfe.py
 import os
-from sefaz_service.danfe.danfe_html import gerar_danfe_html
+from lxml import etree
+from sefaz_service.danfe.danfe_html import gerar_danfe_html_automatico
+
+NFE_NS = "http://www.portalfiscal.inf.br/nfe"
 
 
 def salvar(caminho: str, conteudo: str) -> None:
@@ -13,37 +16,55 @@ def salvar(caminho: str, conteudo: str) -> None:
     print(f">> salvo: {caminho}")
 
 
+def extrair_chave(xml_str: str) -> str:
+    """Extrai a chave de acesso (44 dígitos) do XML nfeProc ou NFe."""
+    root = etree.fromstring(xml_str.encode("utf-8"))
+    nfe = root.find(f".//{{{NFE_NS}}}NFe")
+    if nfe is None:
+        nfe = root
+
+    inf_nfe = nfe.find(f".//{{{NFE_NS}}}infNFe")
+    if inf_nfe is None:
+        return "nota"
+
+    chave = (inf_nfe.get("Id") or "").replace("NFe", "").strip()
+    return chave if len(chave) >= 44 else "nota"
+
+
 def main():
-    # Caminho do XML autorizado (nfeProc) que você colocou
-    xml_path = "saida/12251236400633000134550010000064771752004482.XML"
+    # Caminho do XML autorizado
+    xml_path = "saida/12251236400633000134650010000709551204447177.xml"
 
     print(f"Lendo XML autorizado: {xml_path}")
 
-    # 1) Ler o nfeProc autorizado
     with open(xml_path, "r", encoding="utf-8") as f:
         xml_nfe_proc = f.read()
 
-    # 2) Gerar DANFE HTML
-    danfe_html = gerar_danfe_html(
-        xml_nfe_proc=xml_nfe_proc,
-        logo_url=None,  # coloque "logo.png" se quiser exibir o logo
+    # Extrair chave de acesso
+    chave = extrair_chave(xml_nfe_proc)
+
+    # Gerar automaticamente DANFE ou CUPOM
+    html = gerar_danfe_html_automatico(
+        xml_or_path=xml_nfe_proc,
+        logo_url=None,
     )
 
-    # 3) Salvar o HTML do DANFE
-    salvar("saida/danfe_teste.html", danfe_html)
+    # Salvar arquivo HTML usando a chave
+    html_path = f"saida/{chave}.html"
+    salvar(html_path, html)
 
-    # 4) Tentar gerar PDF (opcional)
+    # Tentar gerar PDF também com o nome da chave
     try:
         from weasyprint import HTML
 
-        HTML(string=danfe_html).write_pdf("saida/danfe_teste.pdf")
-        print(">> salvo: saida/danfe_teste.pdf")
+        pdf_path = f"saida/{chave}.pdf"
+        HTML(string=html).write_pdf(pdf_path)
+        print(f">> salvo: {pdf_path}")
     except Exception as e:
         print("\n-----")
         print("Não foi possível gerar o PDF com o WeasyPrint.")
         print("Motivo técnico:", e)
-        print("O DANFE em HTML foi gerado normalmente em 'saida/danfe_teste.html'.")
-        print("Se quiser PDF depois, instale/configure o WeasyPrint corretamente.")
+        print(f"O HTML foi gerado normalmente em '{html_path}'.")
         print("-----\n")
 
 

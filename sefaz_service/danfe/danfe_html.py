@@ -4,8 +4,9 @@ from __future__ import annotations
 from typing import Optional, List
 from io import BytesIO
 import base64
-
 from lxml import etree
+from .nfce_html import nfce_xml_to_html
+
 
 NFE_NS = "http://www.portalfiscal.inf.br/nfe"
 
@@ -1006,3 +1007,55 @@ def _format_inf_cpl(text: str) -> str:
     # junta de volta, recolocando ';' e quebra de linha
     return ";<br/>".join(partes)
 
+
+def gerar_danfe_html_automatico(
+    xml_or_path: str,
+    **kwargs,
+) -> str:
+    """
+    Lê o XML, detecta se é NF-e (mod=55) ou NFC-e (mod=65)
+    e delega para o gerador correto.
+
+    - xml_or_path: XML em string OU caminho para arquivo.
+    - kwargs: repassados para o gerador correspondente.
+      NFC-e: nfce_xml_to_html(xml, logo_data_uri=..., desenvolvedor=...)
+      NF-e : gerar_danfe_html(xml, logo_url=...)
+    """
+
+    # 1) Carrega XML (string ou arquivo)
+    if len(xml_or_path) < 100 and not xml_or_path.lstrip().startswith("<"):
+        # parece ser caminho de arquivo
+        with open(xml_or_path, "r", encoding="utf-8") as f:
+            xml_str = f.read()
+    else:
+        xml_str = xml_or_path
+
+    # 2) Descobre se é NF-e (55) ou NFC-e (65)
+    root = etree.fromstring(xml_str.encode("utf-8"))
+
+    # Pode ser nfeProc -> NFe ou direto NFe
+    nfe = root.find(f".//{{{NFE_NS}}}NFe")
+    if nfe is None:
+        nfe = root
+
+    ide = nfe.find(f".//{{{NFE_NS}}}ide")
+    mod = "55"  # default
+    if ide is not None:
+        mod_node = ide.find(f"{{{NFE_NS}}}mod")
+        if mod_node is not None and mod_node.text:
+            mod = mod_node.text.strip()
+
+    # 3) Roteia para o gerador correspondente
+    # 3) Roteia para o gerador correspondente
+    if mod == "65":
+        # NFC-e → remover logo_url se existir, pois nfce_xml_to_html não aceita
+        if "logo_url" in kwargs:
+            kwargs = dict(kwargs)
+            kwargs.pop("logo_url")
+        return nfce_xml_to_html(xml_str, **kwargs)
+    else:
+        # NF-e → converter logo_data_uri para logo_url, se necessário
+        if "logo_data_uri" in kwargs and "logo_url" not in kwargs:
+            kwargs = dict(kwargs)
+            kwargs["logo_url"] = kwargs.pop("logo_data_uri")
+        return gerar_danfe_html(xml_str, **kwargs)

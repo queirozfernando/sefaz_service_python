@@ -4,3 +4,4 @@ cryptography
 requests
 requests-pkcs12
 zeep
+qrcode[pil]
