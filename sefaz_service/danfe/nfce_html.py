@@ -458,7 +458,7 @@ def nfce_xml_to_html(
 
         html.append(
             "<tr>"
-            f'<td class="right small">{qtd_str}</td>'
+            f'<td class="right small" style="padding-right:6px;">{qtd_str}</td>'
             f'<td class="left small">{it.uCom}</td>'
             f'<td class="right small">{vl_unit_str}</td>'
             f'<td class="right small">{vl_total_str}</td>'
@@ -549,7 +549,7 @@ def nfce_xml_to_html(
     if qr_b64:
         html.append(
             f'<img src="data:image/png;base64,{qr_b64}" '
-            'alt="QRCode" style="width:120px; height:120px;">'
+            'alt="QRCode" style="width:90px; height:90px;">'
         )
     else:
         html.append(
