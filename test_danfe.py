@@ -33,7 +33,7 @@ def extrair_chave(xml_str: str) -> str:
 
 def main():
     # Caminho do XML autorizado
-    xml_path = "saida/12251236400633000134650010000709551204447177.xml"
+    xml_path = "saida/12251236400633000134650010000709661526183562.xml"
 
     print(f"Lendo XML autorizado: {xml_path}")
 

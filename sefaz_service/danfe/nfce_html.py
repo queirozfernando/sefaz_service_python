@@ -28,7 +28,7 @@ def _format_number(value: Decimal | float | str, casas: int) -> str:
     if not isinstance(value, Decimal):
         value = Decimal(str(value or "0"))
     q = Decimal("1").scaleb(-casas)  # 10^-casas
-    return str(value.quantize(q, rounding=ROUND_HALF_UP))
+    return str(value.quantize(q, rounding=ROUND_HALF_UP)).replace(".", ",")
 
 
 def _format_cnpj_cpf(doc: str) -> str:
@@ -435,8 +435,9 @@ def nfce_xml_to_html(
     )
     html.append(
         "<tr>"
-        '<th class="right small" style="width:25%;">QTD</th>'
-        '<th class="left small" style="width:15%;">UN</th>'
+        # dá um espaço pra dentro na QTD e na UN
+        '<th class="right small" style="width:28%; padding-right:6px;">QTD</th>'
+        '<th class="left small" style="width:12%; padding-left:1px;">UN</th>'
         '<th class="right small" style="width:30%;">VL.UNIT</th>'
         '<th class="right small" style="width:30%;">VL.TOTAL</th>'
         "</tr>"

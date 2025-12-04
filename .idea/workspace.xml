@@ -7,6 +7,7 @@
     <list default="true" id="6e5c8189-cd77-445c-a277-d0fd759cf677" name="Changes" comment="ajustes na nfce">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/sefaz_service/danfe/nfce_html.py" beforeDir="false" afterPath="$PROJECT_DIR$/sefaz_service/danfe/nfce_html.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/test_danfe.py" beforeDir="false" afterPath="$PROJECT_DIR$/test_danfe.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -123,7 +124,15 @@
       <option name="project" value="LOCAL" />
       <updated>1764774683639</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="ajustes na nfce">
+      <option name="closed" value="true" />
+      <created>1764779871917</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1764779871917</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
