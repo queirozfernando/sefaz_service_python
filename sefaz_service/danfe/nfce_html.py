@@ -28,6 +28,7 @@ def _format_number(value: Decimal | float | str, casas: int) -> str:
     if not isinstance(value, Decimal):
         value = Decimal(str(value or "0"))
     q = Decimal("1").scaleb(-casas)  # 10^-casas
+    # Usa vírgula como separador decimal
     return str(value.quantize(q, rounding=ROUND_HALF_UP)).replace(".", ",")
 
 
@@ -435,7 +436,7 @@ def nfce_xml_to_html(
     )
     html.append(
         "<tr>"
-        # dá um espaço pra dentro na QTD e na UN
+        # afastar QTD de UN com padding nas duas células
         '<th class="right small" style="width:28%; padding-right:6px;">QTD</th>'
         '<th class="left small" style="width:12%; padding-left:1px;">UN</th>'
         '<th class="right small" style="width:30%;">VL.UNIT</th>'
