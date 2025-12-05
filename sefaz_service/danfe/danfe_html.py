@@ -58,7 +58,7 @@ def _extrair_icms_info(det, ns) -> dict:
     """
     imposto = det.find("nfe:imposto", ns)
     if imposto is None:
-        return {"cst_csosn": "", "vbc": "", "vicms": "", "picms": ""}
+        return {"cst_csosn": "", "vbc": "", "vicms": "", "piccs": ""}
 
     icms = imposto.find("nfe:ICMS", ns)
     if icms is None:
@@ -130,7 +130,6 @@ def _gerar_barcode_base64(chave: str) -> Optional[str]:
         return None
 
 
-
 def gerar_danfe_html(
     xml_nfe_proc: str,
     logo_url: Optional[str] = None,
@@ -179,9 +178,27 @@ def gerar_danfe_html(
             return iso.split("T")[0]
         return iso
 
+    def _extrair_hora(iso: str) -> str:
+        """
+        Extrai HH:MM:SS de 'AAAA-MM-DDTHH:MM:SS-03:00'
+        """
+        if not iso or "T" not in iso:
+            return ""
+        try:
+            hora = iso.split("T")[1]
+            # remove timezone, se houver
+            for sep in ("-", "+", "Z"):
+                if sep in hora:
+                    hora = hora.split(sep)[0]
+                    break
+            return hora
+        except Exception:
+            return ""
+
     data_emi_iso = _so_data(dh_emi)
     data_emi_br = _format_data_br(dh_emi)
     data_saida_br = _format_data_br(dh_saida)
+    hora_saida = _extrair_hora(dh_saida)
 
     chave_acesso = (inf_nfe.get("Id") or "").replace("NFe", "")
     chave_formatada = _format_chave(chave_acesso)
@@ -579,8 +596,8 @@ def gerar_danfe_html(
 
     def _html_fatura_dup() -> str:
         """
-        FATURA/DUPLICATAS no formato da imagem:
-        linhas com blocos "001  15/02/2025  13.822,00  002  25/02/2025  13.822,00 ..."
+        FATURA/DUPLICATAS no formato de linhas:
+        001 15/02/2025 13.822,00  002 25/02/2025 13.822,00 ...
         até 3 duplicatas por linha.
         """
         if not duplicatas:
@@ -655,7 +672,6 @@ def gerar_danfe_html(
                 <div class="tpnf-quadro">{tp_nf}</div>
             </div>
 
-
             <div class="conteudo" style="margin-top:6px;">
                 <strong>Nº: {int(n_nf) if n_nf.isdigit() else n_nf}</strong>
             </div>
@@ -707,27 +723,24 @@ def gerar_danfe_html(
                 Município: {dest_mun}  UF: {dest_uf}  CEP: {dest_cep}  Fone: {dest_fone}
             </div>
         </div>
-        <div class="box" style="flex: 1; display:flex; flex-direction:column; padding:4px;">
+        <div class="box" style="flex: 1; display:flex; flex-direction:column; padding:0;">
             <div style="text-align:center; border-bottom:1px solid #000; padding:2px 0;">
                 <div class="titulo">DATA DE EMISSÃO</div>
                 <div class="conteudo">{data_emi_br}</div>
             </div>
-        
             <div style="text-align:center; border-bottom:1px solid #000; padding:2px 0;">
                 <div class="titulo">DATA SAÍDA/ENTRADA</div>
                 <div class="conteudo">{data_saida_br}</div>
             </div>
-        
             <div style="text-align:center; padding:2px 0;">
                 <div class="titulo">HORA DE SAÍDA</div>
                 <div class="conteudo">{hora_saida}</div>
             </div>
         </div>
-
     </div>
 """
 
-        # CÁLCULO DO IMPOSTO – layout igual ao da imagem
+        # CÁLCULO DO IMPOSTO – layout com V.ICMS UF DEST e textos
         h += f"""
     <div class="linha">
         <div class="box" style="flex: 3;">
