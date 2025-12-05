@@ -21,9 +21,14 @@ from sefaz_service.core.nfe_evento import (
 from sefaz_service.core.nfe_status import sefaz_nfe_status
 from sefaz_service.core.nfe_consulta import sefaz_nfe_consulta  # consulta por chave
 from sefaz_service.core.nfe_gtin import sefaz_consulta_gtin, GtinResult
+from sefaz_service.danfe.danfe_html import gerar_danfe_html_automatico
 
 # Conversão genérica XML → DocSped
 from sefaz_service.sped import xml_to_doc, doc_sped_to_dict
+
+from fastapi import FastAPI, HTTPException, Body
+from fastapi.responses import HTMLResponse
+
 
 # -------------------------------------------------------------------
 # CONFIGURAÇÃO DE CERTIFICADO (PODE VIR DE VARIÁVEL DE AMBIENTE)
@@ -1052,3 +1057,32 @@ def nfe_analise(
             itens=info.itens,
         ),
     )
+
+
+@app.post(
+    "/danfe/html",
+    response_class=HTMLResponse,
+    summary="Gerar DANFE (NF-e ou NFC-e) em HTML a partir do XML bruto",
+)
+def gerar_danfe_html_route(
+    xml: str = Body(..., media_type="application/xml"),
+):
+    """
+    Recebe o XML bruto da NF-e ou NFC-e e devolve o DANFE em HTML.
+
+    - Se o XML for de NF-e (mod=55) usa o layout retrato.
+    - Se o XML for de NFC-e (mod=65) usa o cupom 80mm.
+    - O XML pode ser <nfeProc> completo ou somente <NFe>/<infNFe>.
+    - Envie o corpo da requisição como XML puro (Content-Type: application/xml).
+    """
+    try:
+        html = gerar_danfe_html_automatico(xml)
+        return HTMLResponse(content=html)
+    except ValueError as e:
+        # erro típico de XML inválido
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao gerar DANFE em HTML: {e}",
+        )
