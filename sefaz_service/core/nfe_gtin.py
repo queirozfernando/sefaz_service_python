@@ -1,13 +1,11 @@
 # sefaz_service/core/nfe_gtin.py
 from __future__ import annotations
 
-from dataclasses import dataclass
 from lxml import etree
+from dataclasses import dataclass
 
 from .envio import enviar_soap_com_pfx, extrair_xml_resultado, EndpointInfo
 
-
-# Endpoint único (SVRS) – igual ao Harbour
 GTIN_ENDPOINT = EndpointInfo(
     url="https://dfe-servico.svrs.rs.gov.br/ws/ccgConsGTIN/ccgConsGTIN.asmx",
     soap_action="http://www.portalfiscal.inf.br/nfe/wsdl/ccgConsGtin/ccgConsGTIN",
@@ -23,9 +21,13 @@ class GtinResult:
 
 
 # ----------------------------------------------------------------------
-# Montagem do XML <consGTIN>
+# Montagem do XML <consGTIN>  (SEM declaração XML)
 # ----------------------------------------------------------------------
 def montar_xml_gtin(gtin: str) -> str:
+    """
+    Gera apenas o bloco <consGTIN>...</consGTIN>, sem <?xml ...?>,
+    igual ao envelope que você usa no Harbour.
+    """
     root = etree.Element(
         "consGTIN",
         versao="1.00",
@@ -33,15 +35,17 @@ def montar_xml_gtin(gtin: str) -> str:
     )
     etree.SubElement(root, "GTIN").text = gtin
 
-    xml_bytes = etree.tostring(root, encoding="utf-8", xml_declaration=True)
-    return xml_bytes.decode("utf-8")
+    # retorna só o elemento, sem xml_declaration
+    return etree.tostring(root, encoding="unicode", xml_declaration=False)
 
 
 # ----------------------------------------------------------------------
-# SOAP envelope (ccgConsGTIN)
+# SOAP envelope (ccgConsGTIN) – igual ao Harbour
 # ----------------------------------------------------------------------
 def montar_soap_gtin(xml_envio: str) -> str:
-    return f"""<?xml version="1.0" encoding="utf-8"?>
+    xml_envio = xml_envio.strip()
+
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
 <soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                  xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">
@@ -56,7 +60,36 @@ def montar_soap_gtin(xml_envio: str) -> str:
 
 
 # ----------------------------------------------------------------------
-# Envio completo + parse **super seguro**
+# Helper: pega texto independente de namespace
+# ----------------------------------------------------------------------
+def _get_text_any_ns(root: etree._Element, local_name: str) -> str | None:
+    """
+    Tenta encontrar uma tag (ex.: 'cStat', 'xMotivo') considerando:
+      - namespace da NFe
+      - namespace do WSDL
+      - sem namespace
+    """
+    ns_uris = [
+        "http://www.portalfiscal.inf.br/nfe",
+        "http://www.portalfiscal.inf.br/nfe/wsdl/ccgConsGtin",
+    ]
+
+    # 1) tenta com namespaces conhecidos
+    for uri in ns_uris:
+        el = root.find(f".//{{{uri}}}{local_name}")
+        if el is not None and el.text:
+            return el.text.strip()
+
+    # 2) tenta sem namespace
+    el = root.find(f".//{local_name}")
+    if el is not None and el.text:
+        return el.text.strip()
+
+    return None
+
+
+# ----------------------------------------------------------------------
+# Envio completo + parse robusto
 # ----------------------------------------------------------------------
 def sefaz_consulta_gtin(gtin: str, pfx_path: str, pfx_password: str) -> GtinResult:
     # 1) XML de envio
@@ -73,7 +106,7 @@ def sefaz_consulta_gtin(gtin: str, pfx_path: str, pfx_password: str) -> GtinResu
         pfx_password=pfx_password,
     )
 
-    # 4) Tentar extrair XML limpo; se der erro, cai pro texto bruto
+    # 4) Extrai XML interno do SOAP; se falhar, fica com texto bruto
     try:
         xml_ret = extrair_xml_resultado(resp.text)
     except Exception:
@@ -82,7 +115,7 @@ def sefaz_consulta_gtin(gtin: str, pfx_path: str, pfx_password: str) -> GtinResu
     status: int | None = None
     motivo: str | None = None
 
-    # Se não tiver nada, apenas devolve o texto bruto pra debug
+    # Se não tiver nada, só devolve pra debug
     if not xml_ret or not xml_ret.strip():
         return GtinResult(
             status=None,
@@ -91,7 +124,7 @@ def sefaz_consulta_gtin(gtin: str, pfx_path: str, pfx_password: str) -> GtinResu
             xml_retorno=xml_ret,
         )
 
-    # Se não parece XML (ex.: HTML de erro), não tenta parsear
+    # Se não for XML (pode ser HTML de erro, texto, etc.)
     if not xml_ret.lstrip().startswith("<"):
         return GtinResult(
             status=None,
@@ -100,18 +133,19 @@ def sefaz_consulta_gtin(gtin: str, pfx_path: str, pfx_password: str) -> GtinResu
             xml_retorno=xml_ret,
         )
 
-    # 5) Tentar interpretar cStat / xMotivo – se falhar, ignora e devolve bruto
+    # 5) Tentar interpretar cStat / xMotivo com tolerância a namespace
     try:
         root = etree.fromstring(xml_ret.encode("utf-8"))
 
-        ns = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
-        cstat_el = root.find(".//nfe:cStat", ns)
-        xmot_el = root.find(".//nfe:xMotivo", ns)
+        cstat_txt = _get_text_any_ns(root, "cStat")
+        xmot_txt = _get_text_any_ns(root, "xMotivo")
 
-        if cstat_el is not None and cstat_el.text:
-            status = int(cstat_el.text.strip())
-        if xmot_el is not None and xmot_el.text:
-            motivo = xmot_el.text.strip()
+        if cstat_txt and cstat_txt.isdigit():
+            status = int(cstat_txt)
+        else:
+            status = None
+
+        motivo = xmot_txt
     except Exception:
         status = None
         motivo = None

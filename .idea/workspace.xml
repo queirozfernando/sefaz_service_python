@@ -4,27 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="6e5c8189-cd77-445c-a277-d0fd759cf677" name="Changes" comment="ajustes na nfce">
-      <change afterPath="$PROJECT_DIR$/sefaz_api/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_api/main.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_api/sped_router.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_service/core/nfe_consulta.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_service/core/nfe_evento.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_service/core/nfe_gtin.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_service/core/nfe_inutilizacao.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_service/core/nfe_status.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_service/nfe/xmltodoc.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_service/sped/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sefaz_service/sped/xml_to_doc.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_cancelamento.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_cancelamento_substituicao.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_cert_path.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_evento_generico.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_inutiliza.py" afterDir="false" />
+    <list default="true" id="6e5c8189-cd77-445c-a277-d0fd759cf677" name="Changes" comment="criacao da nova rota /nfe/xmltodoc">
+      <change afterPath="$PROJECT_DIR$/sefaz_api/nfe_xmltodoc_router.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/sefaz_service/core/envio.py" beforeDir="false" afterPath="$PROJECT_DIR$/sefaz_service/core/envio.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/sefaz_service/core/soaplist.py" beforeDir="false" afterPath="$PROJECT_DIR$/sefaz_service/core/soaplist.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/sefaz_api/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/sefaz_api/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/sefaz_service/core/nfe_gtin.py" beforeDir="false" afterPath="$PROJECT_DIR$/sefaz_service/core/nfe_gtin.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -166,12 +150,21 @@
       <option name="project" value="LOCAL" />
       <updated>1764847750080</updated>
     </task>
-    <option name="localTasksCounter" value="7" />
+    <task id="LOCAL-00007" summary="criacao da nova rota /nfe/xmltodoc">
+      <option name="closed" value="true" />
+      <created>1764941585495</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1764941585495</updated>
+    </task>
+    <option name="localTasksCounter" value="8" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="ajustes na nfe" />
     <MESSAGE value="ajustes na nfce" />
-    <option name="LAST_COMMIT_MESSAGE" value="ajustes na nfce" />
+    <MESSAGE value="criacao da nova rota /nfe/xmltodoc" />
+    <option name="LAST_COMMIT_MESSAGE" value="criacao da nova rota /nfe/xmltodoc" />
   </component>
 </project>

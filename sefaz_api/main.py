@@ -16,9 +16,9 @@ from sefaz_service.core.nfe_evento import (
 )
 from sefaz_service.core.nfe_status import sefaz_nfe_status
 from sefaz_service.core.nfe_consulta import sefaz_nfe_consulta  # consulta por chave
-from sefaz_service.core.nfe_gtin import sefaz_consulta_gtin, GtinResult
+from sefaz_service.core.nfe_gtin import sefaz_consulta_gtin
 
-# 👉 NOVO: conversão XML → DocSped
+# Conversão XML → DocSped
 from sefaz_service.sped import xml_to_doc, doc_sped_to_dict
 
 # -------------------------------------------------------------------
@@ -31,7 +31,7 @@ PFX_PASSWORD = os.getenv("SEFAZ_PFX_PASSWORD", "senha_do_certificado")
 app = FastAPI(
     title="SEFAZ Service API",
     version="1.0.0",
-    description="API para envio de NFe, inutilização, eventos e consultas.",
+    description="API para envio de NFe, inutilização, eventos, consultas e análise de XML.",
 )
 
 # -------------------------------------------------------------------
@@ -179,7 +179,7 @@ class NFeGTINResponse(BaseModel):
     xml_retorno: str
 
 
-# 👉 NOVO: modelos para /nfe/xmltodoc
+# 👉 XML → DocSped básicos
 
 class XmlToDocRequest(BaseModel):
     xml: str = Field(
@@ -190,6 +190,198 @@ class XmlToDocRequest(BaseModel):
 
 class XmlToDocResponse(BaseModel):
     data: dict
+
+
+# 👉 XMLINFO
+
+class NFeXmlInfoRequest(BaseModel):
+    xml: str = Field(
+        ...,
+        description="XML completo da NFe (pode ser <nfeProc> ou apenas <NFe>/<infNFe>).",
+    )
+
+
+class NFeXmlInfoResponse(BaseModel):
+    ide: dict | None = None
+    emit: dict | None = None
+    dest: dict | None = None
+    totais: dict | None = None
+    itens: list[dict] | None = None
+
+
+# 👉 ANÁLISE
+
+class NFeAnaliseRequest(BaseModel):
+    xml: str = Field(
+        ...,
+        description="XML completo da NFe (pode ser <nfeProc> ou apenas <NFe>/<infNFe>).",
+    )
+
+
+class CstResumo(BaseModel):
+    cst: str
+    qtd_itens: int
+
+
+class NFeAnaliseResponse(BaseModel):
+    # Informações gerais
+    tipo_operacao: str = Field(
+        ...,
+        description="ENTRADA ou SAIDA, com base em ide.tpNF (0=entrada,1=saída).",
+    )
+    destino_operacao: str = Field(
+        ...,
+        description="INTERNA, INTERESTADUAL ou EXTERIOR (ide.idDest ou UF emit/dest).",
+    )
+    consumidor_final: bool = Field(
+        ...,
+        description="True se ide.indFinal == '1'.",
+    )
+    contribuinte_destinatario: str = Field(
+        ...,
+        description="CONTRIBUINTE_ICMS / CONTRIBUINTE_ISENTO / NAO_CONTRIBUINTE / DESCONHECIDO.",
+    )
+    regime_emitente: str = Field(
+        ...,
+        description="SIMPLES_NACIONAL / SIMPLES_EXCESSO / REGIME_NORMAL / DESCONHECIDO.",
+    )
+
+    # Flags de análise tributária
+    possui_st: bool = Field(
+        ...,
+        description="True se houver ICMS com CST típico de ST (ex.: 10,30,60,70,90).",
+    )
+    possui_monofasico: bool = Field(
+        ...,
+        description="True se houver PIS/COFINS com CST monofásico (04,05,06,07,08,09).",
+    )
+
+    # Resumo de CST por imposto
+    cst_icms_resumo: list[CstResumo]
+    cst_pis_resumo: list[CstResumo]
+    cst_cofins_resumo: list[CstResumo]
+
+
+# -------------------------------------------------------------------
+# HELPERS DE ANÁLISE
+# -------------------------------------------------------------------
+
+
+def _analisar_dados_nfe(data: dict) -> NFeAnaliseResponse:
+    ide = data.get("ide", {}) or {}
+    emit = data.get("emit", {}) or {}
+    dest = data.get("dest", {}) or {}
+    itens = data.get("itens", []) or []
+
+    # tipo_operacao (ENTRADA/SAIDA)
+    tpNF = (ide.get("tpNF") or "").strip()
+    if tpNF == "0":
+        tipo_operacao = "ENTRADA"
+    elif tpNF == "1":
+        tipo_operacao = "SAIDA"
+    else:
+        tipo_operacao = "DESCONHECIDO"
+
+    # destino_operacao
+    idDest = (ide.get("idDest") or "").strip()
+    if idDest == "1":
+        destino_operacao = "INTERNA"
+    elif idDest == "2":
+        destino_operacao = "INTERESTADUAL"
+    elif idDest == "3":
+        destino_operacao = "EXTERIOR"
+    else:
+        uf_emit = ((emit.get("enderEmit") or {}).get("UF") or "").strip()
+        uf_dest = ((dest.get("enderDest") or {}).get("UF") or "").strip()
+        if uf_emit and uf_dest:
+            destino_operacao = "INTERNA" if uf_emit == uf_dest else "INTERESTADUAL"
+        else:
+            destino_operacao = "DESCONHECIDO"
+
+    # consumidor_final
+    consumidor_final = (ide.get("indFinal") or "").strip() == "1"
+
+    # contribuinte_destinatario
+    indIEDest = (dest.get("indIEDest") or "").strip()
+    if indIEDest == "1":
+        contribuinte_destinatario = "CONTRIBUINTE_ICMS"
+    elif indIEDest == "2":
+        contribuinte_destinatario = "CONTRIBUINTE_ISENTO"
+    elif indIEDest == "9":
+        contribuinte_destinatario = "NAO_CONTRIBUINTE"
+    else:
+        contribuinte_destinatario = "DESCONHECIDO"
+
+    # regime_emitente (CRT)
+    crt = (emit.get("CRT") or "").strip()
+    if crt == "1":
+        regime_emitente = "SIMPLES_NACIONAL"
+    elif crt == "2":
+        regime_emitente = "SIMPLES_EXCESSO"
+    elif crt == "3":
+        regime_emitente = "REGIME_NORMAL"
+    else:
+        regime_emitente = "DESCONHECIDO"
+
+    # Resumos de CST e flags ST / monofásico
+    from collections import Counter
+
+    cst_icms_counter: Counter[str] = Counter()
+    cst_pis_counter: Counter[str] = Counter()
+    cst_cofins_counter: Counter[str] = Counter()
+
+    possui_st = False
+    possui_monofasico = False
+
+    cst_st_set = {"10", "30", "60", "70", "90"}
+    cst_monofasico_set = {"04", "05", "06", "07", "08", "09"}
+
+    for item in itens:
+        icms = item.get("ICMS") or {}
+        pis = item.get("PIS") or {}
+        cofins = item.get("COFINS") or {}
+
+        cst_icms = (icms.get("CST") or icms.get("CSOSN") or "").strip()
+        cst_pis = (pis.get("CST") or "").strip()
+        cst_cofins = (cofins.get("CST") or "").strip()
+
+        if cst_icms:
+            cst_icms_counter[cst_icms] += 1
+            if cst_icms in cst_st_set:
+                possui_st = True
+
+        if cst_pis:
+            cst_pis_counter[cst_pis] += 1
+            if cst_pis in cst_monofasico_set:
+                possui_monofasico = True
+
+        if cst_cofins:
+            cst_cofins_counter[cst_cofins] += 1
+            if cst_cofins in cst_monofasico_set:
+                possui_monofasico = True
+
+    cst_icms_resumo = [
+        CstResumo(cst=k, qtd_itens=v) for k, v in sorted(cst_icms_counter.items())
+    ]
+    cst_pis_resumo = [
+        CstResumo(cst=k, qtd_itens=v) for k, v in sorted(cst_pis_counter.items())
+    ]
+    cst_cofins_resumo = [
+        CstResumo(cst=k, qtd_itens=v) for k, v in sorted(cst_cofins_counter.items())
+    ]
+
+    return NFeAnaliseResponse(
+        tipo_operacao=tipo_operacao,
+        destino_operacao=destino_operacao,
+        consumidor_final=consumidor_final,
+        contribuinte_destinatario=contribuinte_destinatario,
+        regime_emitente=regime_emitente,
+        possui_st=possui_st,
+        possui_monofasico=possui_monofasico,
+        cst_icms_resumo=cst_icms_resumo,
+        cst_pis_resumo=cst_pis_resumo,
+        cst_cofins_resumo=cst_cofins_resumo,
+    )
 
 
 # -------------------------------------------------------------------
@@ -357,9 +549,6 @@ def cancelar_nfe_por_substituicao(payload: CancelamentoSubstRequest):
 def enviar_carta_correcao(payload: CartaCorrecaoRequest):
     """
     Envia uma Carta de Correcao Eletronica (CC-e) para a NFe informada (evento 110110).
-
-    - Usa nSeqEvento para controlar a versão da CC-e (1, 2, 3...).
-    - O texto da correção vai em xCorrecao.
     """
     req = EventoRequest(
         tpAmb=payload.tpAmb,
@@ -368,9 +557,7 @@ def enviar_carta_correcao(payload: CartaCorrecaoRequest):
         chNFe=payload.chNFe,
         tpEvento="110110",
         nSeqEvento=payload.nSeqEvento,
-        # campos específicos:
         xCorrecao=payload.xCorrecao,
-        # não usados na CC-e:
         xJust=None,
         nProt=None,
         chNFeRef=None,
@@ -421,7 +608,7 @@ def consultar_status_servico_nfe(payload: NFeStatusRequest):
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao consultar status do servico NFe: {e} ",
+            detail=f"Erro ao consultar status do servico NFe: {e}",
         )
 
     return NFeStatusResponse(
@@ -486,23 +673,86 @@ def consultar_gtin(payload: NFeGTINRequest):
     )
 
 
-# 👉 NOVO ENDPOINT: /nfe/xmltodoc
+# 👉 /nfe/xmltodoc – devolve o DocSped inteiro em dict
 
 @app.post(
     "/nfe/xmltodoc",
     response_model=XmlToDocResponse,
-    summary="Converter XML de NFe em estrutura DocSped (JSON)",
+    summary="Converter XML de NFe em estrutura DocSped (JSON completo)",
 )
 def nfe_xml_to_doc(payload: XmlToDocRequest):
     """
-    Converte o XML de NFe em uma estrutura DocSped, retornando em JSON.
+    Converte o XML de NFe em uma estrutura DocSped, retornando em JSON completo.
     - Aceita tanto <nfeProc> quanto apenas <NFe>/<infNFe>.
     """
     try:
         doc = xml_to_doc(payload.xml)
         return XmlToDocResponse(data=doc_sped_to_dict(doc))
     except ValueError as e:
-        # Erros de validação do próprio parser (ex: tipo de documento não suportado)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao converter XML: {e}")
+
+
+# 👉 /nfe/xmlinfo – resumo (ide, emit, dest, totais, itens)
+
+@app.post(
+    "/nfe/xmlinfo",
+    response_model=NFeXmlInfoResponse,
+    summary="Extrair informações principais da NFe (ide/emit/dest/totais/itens)",
+)
+def nfe_xml_info(payload: NFeXmlInfoRequest):
+    """
+    Converte o XML de NFe em DocSped e devolve apenas as informações principais,
+    úteis para front ou análise rápida.
+    """
+    try:
+        doc = xml_to_doc(payload.xml)
+        data = doc_sped_to_dict(doc)
+
+        ide = data.get("ide") or {}
+        emit = data.get("emit") or {}
+        dest = data.get("dest") or {}
+        totais = data.get("totais") or data.get("total") or {}
+        itens = data.get("itens") or []
+
+        return NFeXmlInfoResponse(
+            ide=ide,
+            emit=emit,
+            dest=dest,
+            totais=totais,
+            itens=itens,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao extrair info do XML: {e}")
+
+
+# 👉 /nfe/analise – análise fiscal básica
+
+@app.post(
+    "/nfe/analise",
+    response_model=NFeAnaliseResponse,
+    summary="Análise fiscal básica da NFe (regime, ST, monofásico, CST etc.)",
+)
+def nfe_analise(payload: NFeAnaliseRequest):
+    """
+    Recebe o XML da NFe, converte para DocSped e devolve um resumo analítico:
+
+    - Entrada/Saída (ide.tpNF)
+    - Interna / Interestadual / Exterior (ide.idDest ou UF emit/dest)
+    - Consumidor final
+    - Situação do destinatário (indIEDest)
+    - Regime do emitente (CRT)
+    - Flags: possui ST, possui PIS/COFINS monofásico
+    - Resumo de CST de ICMS, PIS e COFINS
+    """
+    try:
+        doc = xml_to_doc(payload.xml)
+        data = doc_sped_to_dict(doc)
+        return _analisar_dados_nfe(data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao analisar XML: {e}")
