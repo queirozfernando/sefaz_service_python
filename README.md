@@ -26,18 +26,18 @@ API em Python (FastAPI) para comunicação com a SEFAZ e utilitários fiscais re
    ```bash
    git clone https://github.com/seu-usuario/sefaz_service.git
    cd sefaz_service
+(Opcional, mas recomendado) Crie e ative um ambiente virtual:
 
-2. (Opcional, mas recomendado) Crie e ative um ambiente virtual:
-
+bash
+Copy code
 python -m venv venv
 venv\Scripts\activate
+Instale as dependências:
 
-3. Instale as dependências:
-
+bash
+Copy code
 pip install -r requirements.txt
-
 Configuração do certificado (opcional)
-
 Algumas rotas usam um certificado padrão definido por variáveis de ambiente:
 
 SEFAZ_PFX_PATH – caminho completo do arquivo .pfx
@@ -46,21 +46,21 @@ SEFAZ_PFX_PASSWORD – senha do certificado
 
 Você pode defini-las no Windows, por exemplo:
 
+bat
+Copy code
 set SEFAZ_PFX_PATH=C:\certificados\seu_certificado.pfx
 set SEFAZ_PFX_PASSWORD=suasenha
-
 Em várias rotas você também pode enviar o caminho do .pfx e a senha direto no JSON da requisição, sem depender das variáveis de ambiente.
 
 Como iniciar a API
-
 Na raiz do projeto existe o script:
 
+text
+Copy code
 start_sefaz_service.bat
-
 Ele já chama o Uvicorn com a aplicação sefaz_api.main:app.
 
 1. Via duplo clique
-
 Dê dois cliques em start_sefaz_service.bat.
 
 Uma janela de terminal será aberta com o servidor rodando.
@@ -72,20 +72,21 @@ http://127.0.0.1:8000
 Documentação Swagger: http://127.0.0.1:8000/docs
 
 2. Via prompt de comando
-
 Abra o Prompt de Comando na pasta do projeto e rode:
 
+bat
+Copy code
 start_sefaz_service.bat
-
 Rotas disponíveis
 1. Autorização de NF-e
-
 POST /nfe/enviar
 
 Envia uma NF-e para autorização na SEFAZ.
 
 Body (JSON):
 
+json
+Copy code
 {
   "uf": "AC",
   "ambiente": "2",
@@ -93,16 +94,15 @@ Body (JSON):
   "certificado": "C:\\certificados\\certificado.pfx",
   "senha": "senha_do_certificado"
 }
-
-
 Retorno: status da SEFAZ, XML assinado, envio e retorno completos.
 
 2. Inutilização de numeração
-
 POST /nfe/inutilizar
 
 Body (JSON):
 
+json
+Copy code
 {
   "uf": "AC",
   "cUF": "12",
@@ -115,17 +115,16 @@ Body (JSON):
   "nNFFin": "120",
   "xJust": "Justificativa com pelo menos 15 caracteres"
 }
-
-
 Retorno: cStat, xMotivo, nProt, dhRecbto, XML bruto de retorno.
 
 3. Eventos de NF-e
 3.1 Cancelamento
-
 POST /nfe/evento/cancelar
 
 Body (JSON):
 
+json
+Copy code
 {
   "uf": "AC",
   "cOrgao": "12",
@@ -136,11 +135,11 @@ Body (JSON):
   "xJust": "Justificativa do cancelamento...",
   "nSeqEvento": 1
 }
-
 3.2 Cancelamento por substituição (110112)
-
 POST /nfe/evento/cancelar-substituicao
 
+json
+Copy code
 {
   "uf": "AC",
   "cOrgao": "12",
@@ -152,11 +151,11 @@ POST /nfe/evento/cancelar-substituicao
   "xJust": "Justificativa...",
   "nSeqEvento": 1
 }
-
 3.3 Carta de Correção (CC-e – 110110)
-
 POST /nfe/evento/carta-correcao
 
+json
+Copy code
 {
   "uf": "AC",
   "cOrgao": "12",
@@ -166,24 +165,24 @@ POST /nfe/evento/carta-correcao
   "nSeqEvento": 1,
   "xCorrecao": "Texto da correção, respeitando legislação..."
 }
-
 4. Status do serviço NFe
-
 POST /nfe/status
 
 Verifica se o serviço da SEFAZ está operacional (não é o status de uma nota específica).
 
+json
+Copy code
 {
   "uf": "AC",
   "ambiente": "2",
   "certificado": "C:\\certificados\\certificado.pfx",
   "senha": "senha_do_certificado"
 }
-
 5. Consulta de situação da NFe por chave
-
 POST /nfe/consulta
 
+json
+Copy code
 {
   "uf": "AC",
   "ambiente": "2",
@@ -191,29 +190,25 @@ POST /nfe/consulta
   "certificado": "C:\\certificados\\certificado.pfx",
   "senha": "senha_do_certificado"
 }
-
 6. Consulta de GTIN (SVRS)
-
 POST /nfe/gtin
 
+json
+Copy code
 {
   "gtin": "7897062500066",
   "certificado": "C:\\certificados\\certificado.pfx",
   "senha": "senha_do_certificado"
 }
-
-
 Retorna status, motivo, XML de envio e retorno.
 
 Rotas de XML bruto (sem JSON)
-
 As rotas abaixo recebem XML puro no corpo da requisição, com Content-Type: application/xml.
 Não é necessário escapar com \" nem envolver em JSON.
 
 Você pode enviar, por exemplo, um <nfeProc>...</nfeProc> ou <NFe>...</NFe> inteiro.
 
 7. Converter XML de NFe em DocSped
-
 POST /nfe/xmltodoc
 
 Body: XML bruto da NFe
@@ -222,15 +217,14 @@ Header: Content-Type: application/xml
 
 Exemplo com curl:
 
+bash
+Copy code
 curl -X POST "http://127.0.0.1:8000/nfe/xmltodoc" ^
   -H "Content-Type: application/xml" ^
   --data-binary "@nota.xml"
-
-
 Retorno: objeto data com o DocSped convertido em dict (JSON).
 
 8. Resumo do XML da NFe
-
 POST /nfe/xmlinfo
 
 Extrai informações resumidas da NFe diretamente do XML:
@@ -247,13 +241,15 @@ itens (com ICMS, PIS e COFINS básicos por item)
 
 Exemplo:
 
+bash
+Copy code
 curl -X POST "http://127.0.0.1:8000/nfe/xmlinfo" ^
   -H "Content-Type: application/xml" ^
   --data-binary "@nota.xml"
-
-
 Retorno (exemplo simplificado):
 
+json
+Copy code
 {
   "ide": {
     "cUF": "12",
@@ -296,9 +292,7 @@ Retorno (exemplo simplificado):
     }
   ]
 }
-
 9. Análise tributária da NFe
-
 POST /nfe/analise
 
 Faz uma análise básica da NF-e a partir do XML:
@@ -327,13 +321,15 @@ Devolve também o resumo igual ao /nfe/xmlinfo.
 
 Exemplo:
 
+bash
+Copy code
 curl -X POST "http://127.0.0.1:8000/nfe/analise" ^
   -H "Content-Type: application/xml" ^
   --data-binary "@nota.xml"
-
-
 Retorno (exemplo resumido):
 
+json
+Copy code
 {
   "ok": true,
   "mensagens": [
@@ -366,9 +362,7 @@ Retorno (exemplo resumido):
   },
   "resumo": { "... mesmo formato do /nfe/xmlinfo ..." }
 }
-
 Documentação interativa (Swagger)
-
 Depois de subir a API com start_sefaz_service.bat, acesse:
 
 Swagger UI: http://127.0.0.1:8000/docs
@@ -385,5 +379,4 @@ Lá você pode testar todas as rotas, inclusive:
 
 bastando colar o XML bruto no body (em application/xml).
 
-
-
+Licença
