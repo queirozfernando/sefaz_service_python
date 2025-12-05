@@ -74,7 +74,15 @@ def _extrair_icms_info(det, ns) -> dict:
 
     cst = _get_text(icms_child, "nfe:CST", ns)
     csosn = _get_text(icms_child, "nfe:CSOSN", ns)
-    cst_csosn = csosn or cst
+    orig = _get_text(icms_child, "nfe:orig", ns)
+
+    # monta CST/CSOSN com origem (orig + CST/CSOSN) → ex: 0 + 41 = 041
+    if csosn:
+        cst_csosn = f"{orig}{csosn}"
+    elif cst:
+        cst_csosn = f"{orig}{cst}"
+    else:
+        cst_csosn = ""
 
     vbc = _get_text(icms_child, "nfe:vBC", ns)
     vicms = _get_text(icms_child, "nfe:vICMS", ns)
@@ -96,11 +104,13 @@ def _gerar_barcode_base64(chave: str) -> Optional[str]:
     try:
         import barcode
         from barcode.writer import ImageWriter
-    except Exception:
+    except Exception as e:
+        print("[DANFE] Erro ao importar python-barcode:", e)
         return None
 
     digits = "".join(c for c in (chave or "") if c.isdigit())
     if not digits:
+        print("[DANFE] Chave de acesso vazia, não gera código de barras.")
         return None
 
     try:
@@ -115,8 +125,10 @@ def _gerar_barcode_base64(chave: str) -> Optional[str]:
             },
         )
         return base64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception:
+    except Exception as e:
+        print("[DANFE] Erro gerando código de barras:", e)
         return None
+
 
 
 def gerar_danfe_html(
@@ -235,6 +247,7 @@ def gerar_danfe_html(
     v_ipi = _get_text(icmstot, "nfe:vIPI", ns)
     v_nf = _get_text(icmstot, "nfe:vNF", ns)
     v_tot_trib = _get_text(icmstot, "nfe:vTotTrib", ns)
+    v_icms_uf_dest = _get_text(icmstot, "nfe:vICMSUFDest", ns)
 
     # ----- PROTOCOLO -----
     protocolo = ""
@@ -329,7 +342,6 @@ def gerar_danfe_html(
     # ----- INF. ADICIONAIS -----
     inf_cpl_raw = _get_text(inf_adic, "nfe:infCpl", ns)
     inf_cpl = _format_inf_cpl(inf_cpl_raw)
-
 
     # ----- ITENS -----
     itens: List[dict] = []
@@ -566,37 +578,36 @@ def gerar_danfe_html(
 """
 
     def _html_fatura_dup() -> str:
-        # até 6 parcelas, reservando espaço mesmo se não houver dados
-        max_parc = 6
-        cells = ""
-        for i in range(max_parc):
-            if i < len(duplicatas):
-                d = duplicatas[i]
-                cells += f"""
-                    <td style="vertical-align:top;min-height:32px;">
-                        <div>Nº: {d["nDup"]}</div>
-                        <div>Venc: {d["dVenc"]}</div>
-                        <div>Valor: {d["vDup"]}</div>
-                    </td>
-                """
-            else:
-                cells += """
-                    <td style="vertical-align:top;min-height:32px;">
-                        <div>&nbsp;</div>
-                        <div>&nbsp;</div>
-                        <div>&nbsp;</div>
-                    </td>
-                """
+        """
+        FATURA/DUPLICATAS no formato da imagem:
+        linhas com blocos "001  15/02/2025  13.822,00  002  25/02/2025  13.822,00 ..."
+        até 3 duplicatas por linha.
+        """
+        if not duplicatas:
+            linhas_html = "<div>&nbsp;</div>"
+        else:
+            linhas = []
+            for i in range(0, len(duplicatas), 3):
+                grupo = duplicatas[i:i + 3]
+                partes_linha = []
+                for d in grupo:
+                    partes_linha.append(
+                        f'{d["nDup"]}&nbsp;&nbsp;{d["dVenc"]}&nbsp;&nbsp;{d["vDup"]}'
+                    )
+                linhas.append(
+                    "<div>"
+                    + "&nbsp;&nbsp;&nbsp;&nbsp;".join(partes_linha)
+                    + "</div>"
+                )
+            linhas_html = "\n".join(linhas)
 
         return f"""
     <div class="linha">
         <div class="box" style="flex: 3;">
             <div class="titulo">FATURA/DUPLICATAS</div>
-            <table class="dup-table">
-                <tr>
-                    {cells}
-                </tr>
-            </table>
+            <div class="conteudo">
+                {linhas_html}
+            </div>
         </div>
     </div>
 """
@@ -634,15 +645,16 @@ def gerar_danfe_html(
             <div class="conteudo small"
                  style="margin-top:6px;
                         display:flex;
-                        justify-content:space-between;
-                        align-items:flex-start;
-                        padding:0 36px;">
-                <div style="text-align:left;">
+                        align-items:center;
+                        justify-content:center;
+                        column-gap:40px;">
+                <div style="text-align:left; white-space:nowrap;">
                     0 - ENTRADA<br/>
                     1 - SAÍDA
                 </div>
                 <div class="tpnf-quadro">{tp_nf}</div>
             </div>
+
 
             <div class="conteudo" style="margin-top:6px;">
                 <strong>Nº: {int(n_nf) if n_nf.isdigit() else n_nf}</strong>
@@ -695,17 +707,27 @@ def gerar_danfe_html(
                 Município: {dest_mun}  UF: {dest_uf}  CEP: {dest_cep}  Fone: {dest_fone}
             </div>
         </div>
-        <div class="box" style="flex: 1; display:flex; flex-direction:column; justify-content:center;">
-            <div class="titulo">DATA DE EMISSÃO</div>
-            <div class="conteudo">{data_emi_br}</div>
-            <div style="height:8px;"></div>
-            <div class="titulo">DATA DE SAÍDA / ENTRADA</div>
-            <div class="conteudo">{data_saida_br}</div>
+        <div class="box" style="flex: 1; display:flex; flex-direction:column; padding:4px;">
+            <div style="text-align:center; border-bottom:1px solid #000; padding:2px 0;">
+                <div class="titulo">DATA DE EMISSÃO</div>
+                <div class="conteudo">{data_emi_br}</div>
+            </div>
+        
+            <div style="text-align:center; border-bottom:1px solid #000; padding:2px 0;">
+                <div class="titulo">DATA SAÍDA/ENTRADA</div>
+                <div class="conteudo">{data_saida_br}</div>
+            </div>
+        
+            <div style="text-align:center; padding:2px 0;">
+                <div class="titulo">HORA DE SAÍDA</div>
+                <div class="conteudo">{hora_saida}</div>
+            </div>
         </div>
+
     </div>
 """
 
-        # CÁLCULO DO IMPOSTO
+        # CÁLCULO DO IMPOSTO – layout igual ao da imagem
         h += f"""
     <div class="linha">
         <div class="box" style="flex: 3;">
@@ -720,14 +742,18 @@ def gerar_danfe_html(
                     <div class="conteudo">{v_icms}</div>
                 </div>
                 <div class="box" style="flex:1;">
-                    <div class="titulo">BASE CÁLC. ICMS SUBST.</div>
+                    <div class="titulo">BASE DE CÁLCULO DO ICMS SUBS. TRIB.</div>
                     <div class="conteudo">{v_bc_st}</div>
                 </div>
                 <div class="box" style="flex:1;">
-                    <div class="titulo">VALOR ICMS SUBST.</div>
+                    <div class="titulo">VALOR DO ICMS SUBS. TRIB.</div>
                     <div class="conteudo">{v_st}</div>
                 </div>
                 <div class="box" style="flex:1;">
+                    <div class="titulo">V.ICMS UF DEST</div>
+                    <div class="conteudo">{v_icms_uf_dest}</div>
+                </div>
+                <div class="box" style="flex:1.1;">
                     <div class="titulo">VALOR TOTAL DOS PRODUTOS</div>
                     <div class="conteudo">{v_prod}</div>
                 </div>
@@ -754,7 +780,7 @@ def gerar_danfe_html(
                     <div class="conteudo">{v_ipi}</div>
                 </div>
                 <div class="box" style="flex:1.1;">
-                    <div class="titulo">VALOR TOTAL DA NOTA</div>
+                    <div class="titulo">VALOR TOTAL DA NOTA FISCAL</div>
                     <div class="conteudo"><strong>{v_nf}</strong></div>
                 </div>
             </div>
@@ -859,30 +885,30 @@ def gerar_danfe_html(
 
     def _html_inicio_tabela_itens() -> str:
         return """
-    <div class="linha itens">
-        <div class="box" style="flex: 3;">
-            <div class="titulo">DADOS DOS PRODUTOS / SERVIÇOS</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>ITEM</th>
-                        <th>CÓDIGO</th>
-                        <th>DESCRIÇÃO DO PRODUTO / SERVIÇO</th>
-                        <th>NCM/SH</th>
-                        <th>EAN</th>
-                        <th>CST/CSOSN</th>
-                        <th>CFOP</th>
-                        <th>UN</th>
-                        <th>QTD</th>
-                        <th>VLR UNIT.</th>
-                        <th>VLR TOTAL</th>
-                        <th>B.CÁLC. ICMS</th>
-                        <th>VLR ICMS</th>
-                        <th>ALÍQ. ICMS</th>
-                    </tr>
-                </thead>
-                <tbody>
-"""
+        <div class="linha itens">
+            <div class="box" style="flex: 3;">
+                <div class="titulo">DADOS DOS PRODUTOS / SERVIÇOS</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ITEM</th>
+                            <th>CÓDIGO</th>
+                            <th>DESCRIÇÃO DO PRODUTO / SERVIÇO</th>
+                            <th>NCM/SH</th>
+                            <th>EAN</th>
+                            <th style="white-space:normal; width:35px;">CST<br/>CSOSN</th>
+                            <th>CFOP</th>
+                            <th>UN</th>
+                            <th>QTD</th>
+                            <th>VLR UNIT.</th>
+                            <th>VLR TOTAL</th>
+                            <th>B.CÁLC. ICMS</th>
+                            <th>VLR ICMS</th>
+                            <th>ALÍQ. ICMS</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+    """
 
     def _html_fim_tabela_itens() -> str:
         return """
@@ -1045,7 +1071,6 @@ def gerar_danfe_html_automatico(
         if mod_node is not None and mod_node.text:
             mod = mod_node.text.strip()
 
-    # 3) Roteia para o gerador correspondente
     # 3) Roteia para o gerador correspondente
     if mod == "65":
         # NFC-e → remover logo_url se existir, pois nfce_xml_to_html não aceita
