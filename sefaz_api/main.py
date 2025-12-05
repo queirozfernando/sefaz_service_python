@@ -1,0 +1,508 @@
+# sefaz_api/main.py
+from __future__ import annotations
+
+import os
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+from sefaz_service.core.nfe_envio import sefaz_nfe_envio
+from sefaz_service.core.nfe_inutilizacao import (
+    InutilizacaoRequest,
+    enviar_inutilizacao,
+)
+from sefaz_service.core.nfe_evento import (
+    EventoRequest,
+    sefaz_enviar_evento,
+)
+from sefaz_service.core.nfe_status import sefaz_nfe_status
+from sefaz_service.core.nfe_consulta import sefaz_nfe_consulta  # consulta por chave
+from sefaz_service.core.nfe_gtin import sefaz_consulta_gtin, GtinResult
+
+# 👉 NOVO: conversão XML → DocSped
+from sefaz_service.sped import xml_to_doc, doc_sped_to_dict
+
+# -------------------------------------------------------------------
+# CONFIGURAÇÃO DE CERTIFICADO (PODE VIR DE VARIÁVEL DE AMBIENTE)
+# -------------------------------------------------------------------
+
+PFX_PATH = os.getenv("SEFAZ_PFX_PATH", r"C:\certificados\seu_certificado.pfx")
+PFX_PASSWORD = os.getenv("SEFAZ_PFX_PASSWORD", "senha_do_certificado")
+
+app = FastAPI(
+    title="SEFAZ Service API",
+    version="1.0.0",
+    description="API para envio de NFe, inutilização, eventos e consultas.",
+)
+
+# -------------------------------------------------------------------
+# MODELOS Pydantic PARA REQUESTS/RESPONSES
+# -------------------------------------------------------------------
+
+
+class NFeAutorizarComCertRequest(BaseModel):
+    uf: str = Field(..., description="Sigla da UF, ex.: AC, SP, MG")
+    ambiente: str = Field("2", description="1=Producao, 2=Homologacao")
+    xml_nfe: str = Field(..., description="XML da NFe (sem assinatura)")
+    certificado: str = Field(
+        ...,
+        description="Caminho completo do arquivo .pfx no servidor (ex.: C:\\Certificados\\cert.pfx)",
+    )
+    senha: str = Field(..., description="Senha do certificado PFX")
+
+
+class NFeEnvioResponse(BaseModel):
+    status: int | None
+    motivo: str | None
+    xml_assinado: str
+    xml_envi_nfe: str
+    xml_retorno: str
+
+
+class InutilizacaoAPIRequest(BaseModel):
+    uf: str = Field(..., description="Sigla da UF, ex.: AC")
+    cUF: str = Field(..., description="Código numérico da UF, ex.: 12 para AC")
+    tpAmb: str = Field("2", description="1=Produção, 2=Homologação")
+    ano: str = Field(..., description="Ano com 2 dígitos, ex.: 25")
+    CNPJ: str = Field(..., description="CNPJ do emitente (com ou sem máscara)")
+    mod: str = Field("55", description="Modelo da NFe: 55 ou 65")
+    serie: str = Field(..., description="Série da NFe, ex.: 1")
+    nNFIni: str = Field(..., description="Número inicial a inutilizar")
+    nNFFin: str = Field(..., description="Número final a inutilizar")
+    xJust: str = Field(..., min_length=15, description="Justificativa da inutilização")
+
+
+class InutilizacaoAPIResponse(BaseModel):
+    cStat: str | None
+    xMotivo: str | None
+    nProt: str | None
+    dhRecbto: str | None
+    xml_retorno: str | None
+
+
+class CancelamentoRequest(BaseModel):
+    uf: str = Field(..., description="Sigla da UF, ex.: AC")
+    cOrgao: str = Field(..., description="Código da UF, ex.: 12 para AC")
+    tpAmb: str = Field("2", description="1=Produção, 2=Homologação")
+    CNPJ: str = Field(..., description="CNPJ do emitente")
+    chNFe: str = Field(..., description="Chave completa da NFe a cancelar")
+    nProt: str = Field(..., description="Protocolo de autorização da NFe")
+    xJust: str = Field(..., min_length=15, description="Justificativa do cancelamento")
+    nSeqEvento: int = Field(1, description="Número sequencial do evento (normalmente 1)")
+
+
+class CancelamentoSubstRequest(BaseModel):
+    uf: str
+    cOrgao: str
+    tpAmb: str = "2"
+    CNPJ: str
+    chNFe: str = Field(..., description="Chave da NFe que será cancelada")
+    chNFeRef: str = Field(..., description="Chave da NFe substituta")
+    nProt: str = Field(..., description="Protocolo de autorização da NFe a cancelar")
+    xJust: str = Field(..., min_length=15, description="Justificativa")
+    nSeqEvento: int = 1
+
+
+class CartaCorrecaoRequest(BaseModel):
+    uf: str = Field(..., description="Sigla da UF, ex.: AC")
+    cOrgao: str = Field(..., description="Código da UF (ex.: 12 para AC)")
+    tpAmb: str = Field("2", description="1=Producao, 2=Homologacao")
+    CNPJ: str = Field(..., description="CNPJ do emitente")
+    chNFe: str = Field(..., description="Chave completa da NFe (44 dígitos)")
+    nSeqEvento: int = Field(
+        1,
+        description="Número sequencial da CC-e (1 para primeira, 2 para segunda, etc.)",
+    )
+    xCorrecao: str = Field(
+        ...,
+        min_length=15,
+        max_length=1000,
+        description="Texto da Carta de Correcao (respeitando as regras da legislação)",
+    )
+
+
+class EventoAPIResponse(BaseModel):
+    cStat_lote: int | None
+    xMotivo_lote: str | None
+    cStat_evento: int | None
+    xMotivo_evento: str | None
+    nProt_evento: str | None
+    xml_envio: str
+    xml_assinado: str
+    xml_retorno: str
+
+
+class NFeStatusRequest(BaseModel):
+    uf: str = Field(..., description="Sigla da UF, ex.: AC, SP, MG")
+    ambiente: str = Field("2", description="1=Producao, 2=Homologacao")
+    certificado: str = Field(
+        ...,
+        description="Caminho completo do arquivo .pfx no servidor (ex.: C:\\Certificados\\cert.pfx)",
+    )
+    senha: str = Field(..., description="Senha do certificado PFX")
+
+
+class NFeStatusResponse(BaseModel):
+    status: int | None
+    motivo: str | None
+    xml_envio: str
+    xml_retorno: str
+
+
+class NFeConsultaChaveRequest(BaseModel):
+    uf: str = Field(..., description="Sigla da UF, ex.: AC, SP, MG")
+    ambiente: str = Field("2", description="1=Producao, 2=Homologacao")
+    chNFe: str = Field(..., description="Chave completa da NFe (44 dígitos)")
+    certificado: str = Field(
+        ...,
+        description="Caminho completo do arquivo .pfx no servidor (ex.: C:\\Certificados\\cert.pfx)",
+    )
+    senha: str = Field(..., description="Senha do certificado PFX")
+
+
+class NFeConsultaChaveResponse(BaseModel):
+    status: int | None
+    motivo: str | None
+    xml_envio: str
+    xml_retorno: str
+
+
+class NFeGTINRequest(BaseModel):
+    gtin: str
+    certificado: str
+    senha: str
+
+
+class NFeGTINResponse(BaseModel):
+    status: int | None
+    motivo: str | None
+    xml_envio: str
+    xml_retorno: str
+
+
+# 👉 NOVO: modelos para /nfe/xmltodoc
+
+class XmlToDocRequest(BaseModel):
+    xml: str = Field(
+        ...,
+        description="XML completo da NFe (pode ser <nfeProc> ou apenas <NFe>/<infNFe>).",
+    )
+
+
+class XmlToDocResponse(BaseModel):
+    data: dict
+
+
+# -------------------------------------------------------------------
+# ENDPOINTS
+# -------------------------------------------------------------------
+
+
+@app.post("/nfe/enviar", response_model=NFeEnvioResponse, summary="Enviar NFe (autorização)")
+def enviar_nfe(payload: NFeAutorizarComCertRequest):
+    """
+    Envia uma NFe para a SEFAZ usando certificado e senha enviados na requisição.
+    - Recebe XML da NFe sem assinatura.
+    - Usa o PFX informado (caminho + senha).
+    - Assina, monta enviNFe, envia via SOAP e retorna o resultado.
+    """
+    try:
+        result = sefaz_nfe_envio(
+            xml_nfe=payload.xml_nfe,
+            uf=payload.uf,
+            pfx_path=payload.certificado,
+            pfx_password=payload.senha,
+            ambiente=payload.ambiente,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao enviar NFe com certificado informado: {e}",
+        )
+
+    return NFeEnvioResponse(
+        status=result.status,
+        motivo=result.motivo,
+        xml_assinado=result.xml_assinado,
+        xml_envi_nfe=result.xml_envi_nfe,
+        xml_retorno=result.xml_retorno,
+    )
+
+
+@app.post("/nfe/inutilizar", response_model=InutilizacaoAPIResponse, summary="Inutilizar numeração de NFe")
+def inutilizar_numeracao(payload: InutilizacaoAPIRequest):
+    """
+    Inutilização de numeração de NFe (NFeInutilizacao4).
+    """
+    req = InutilizacaoRequest(
+        cUF=payload.cUF,
+        tpAmb=payload.tpAmb,
+        ano=payload.ano,
+        CNPJ=payload.CNPJ,
+        mod=payload.mod,
+        serie=payload.serie,
+        nNFIni=payload.nNFIni,
+        nNFFin=payload.nNFFin,
+        xJust=payload.xJust,
+    )
+
+    try:
+        resp = enviar_inutilizacao(
+            req=req,
+            certificado=PFX_PATH,
+            senha=PFX_PASSWORD,
+            uf_sigla=payload.uf,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao inutilizar: {e}")
+
+    return InutilizacaoAPIResponse(
+        cStat=resp.cStat,
+        xMotivo=resp.xMotivo,
+        nProt=resp.nProt,
+        dhRecbto=resp.dhRecbto,
+        xml_retorno=resp.raw_xml,
+    )
+
+
+@app.post("/nfe/evento/cancelar", response_model=EventoAPIResponse, summary="Cancelar NFe (evento 110111)")
+def cancelar_nfe(payload: CancelamentoRequest):
+    """
+    Envia evento de CANCELAMENTO (110111).
+    """
+    req = EventoRequest(
+        tpAmb=payload.tpAmb,
+        cOrgao=payload.cOrgao,
+        CNPJ=payload.CNPJ,
+        chNFe=payload.chNFe,
+        tpEvento="110111",
+        nSeqEvento=payload.nSeqEvento,
+        xJust=payload.xJust,
+        nProt=payload.nProt,
+        chNFeRef=None,
+    )
+
+    try:
+        res = sefaz_enviar_evento(
+            req=req,
+            uf=payload.uf,
+            pfx_path=PFX_PATH,
+            pfx_password=PFX_PASSWORD,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao enviar evento de cancelamento: {e}")
+
+    return EventoAPIResponse(
+        cStat_lote=res.cStat_lote,
+        xMotivo_lote=res.xMotivo_lote,
+        cStat_evento=res.cStat_evento,
+        xMotivo_evento=res.xMotivo_evento,
+        nProt_evento=res.nProt_evento,
+        xml_envio=res.xml_envio,
+        xml_assinado=res.xml_assinado,
+        xml_retorno=res.xml_retorno,
+    )
+
+
+@app.post(
+    "/nfe/evento/cancelar-substituicao",
+    response_model=EventoAPIResponse,
+    summary="Cancelar NFe por substituição (evento 110112)",
+)
+def cancelar_nfe_por_substituicao(payload: CancelamentoSubstRequest):
+    """
+    Envia evento de CANCELAMENTO POR SUBSTITUIÇÃO (110112).
+    """
+    req = EventoRequest(
+        tpAmb=payload.tpAmb,
+        cOrgao=payload.cOrgao,
+        CNPJ=payload.CNPJ,
+        chNFe=payload.chNFe,
+        tpEvento="110112",
+        nSeqEvento=payload.nSeqEvento,
+        xJust=payload.xJust,
+        nProt=payload.nProt,
+        chNFeRef=payload.chNFeRef,
+    )
+
+    try:
+        res = sefaz_enviar_evento(
+            req=req,
+            uf=payload.uf,
+            pfx_path=PFX_PATH,
+            pfx_password=PFX_PASSWORD,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao enviar evento de cancelamento por substituicao: {e}",
+        )
+
+    return EventoAPIResponse(
+        cStat_lote=res.cStat_lote,
+        xMotivo_lote=res.xMotivo_lote,
+        cStat_evento=res.cStat_evento,
+        xMotivo_evento=res.xMotivo_evento,
+        nProt_evento=res.nProt_evento,
+        xml_envio=res.xml_envio,
+        xml_assinado=res.xml_assinado,
+        xml_retorno=res.xml_retorno,
+    )
+
+
+@app.post(
+    "/nfe/evento/carta-correcao",
+    response_model=EventoAPIResponse,
+    summary="Enviar Carta de Correcao (evento 110110)",
+)
+def enviar_carta_correcao(payload: CartaCorrecaoRequest):
+    """
+    Envia uma Carta de Correcao Eletronica (CC-e) para a NFe informada (evento 110110).
+
+    - Usa nSeqEvento para controlar a versão da CC-e (1, 2, 3...).
+    - O texto da correção vai em xCorrecao.
+    """
+    req = EventoRequest(
+        tpAmb=payload.tpAmb,
+        cOrgao=payload.cOrgao,
+        CNPJ=payload.CNPJ,
+        chNFe=payload.chNFe,
+        tpEvento="110110",
+        nSeqEvento=payload.nSeqEvento,
+        # campos específicos:
+        xCorrecao=payload.xCorrecao,
+        # não usados na CC-e:
+        xJust=None,
+        nProt=None,
+        chNFeRef=None,
+    )
+
+    try:
+        res = sefaz_enviar_evento(
+            req=req,
+            uf=payload.uf,
+            pfx_path=PFX_PATH,
+            pfx_password=PFX_PASSWORD,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao enviar carta de correcao: {e}",
+        )
+
+    return EventoAPIResponse(
+        cStat_lote=res.cStat_lote,
+        xMotivo_lote=res.xMotivo_lote,
+        cStat_evento=res.cStat_evento,
+        xMotivo_evento=res.xMotivo_evento,
+        nProt_evento=res.nProt_evento,
+        xml_envio=res.xml_envio,
+        xml_assinado=res.xml_assinado,
+        xml_retorno=res.xml_retorno,
+    )
+
+
+@app.post(
+    "/nfe/status",
+    response_model=NFeStatusResponse,
+    summary="Consultar status do SERVIÇO NFe (NFeStatusServico4)",
+)
+def consultar_status_servico_nfe(payload: NFeStatusRequest):
+    """
+    Consulta o STATUS DO SERVIÇO de NFe (NFeStatusServico4) para a UF/ambiente informados.
+    Não é status da nota, e sim se o webservice está em operação (cStat 107/108 etc.).
+    """
+    try:
+        res = sefaz_nfe_status(
+            uf=payload.uf,
+            pfx_path=payload.certificado,
+            pfx_password=payload.senha,
+            ambiente=payload.ambiente,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao consultar status do servico NFe: {e} ",
+        )
+
+    return NFeStatusResponse(
+        status=res.cStat,
+        motivo=res.xMotivo,
+        xml_envio=res.xml_envio,
+        xml_retorno=res.xml_retorno,
+    )
+
+
+@app.post(
+    "/nfe/consulta",
+    response_model=NFeConsultaChaveResponse,
+    summary="Consultar situação de NFe por CHAVE (NFeConsultaProtocolo4)",
+)
+def consultar_nfe_por_chave(payload: NFeConsultaChaveRequest):
+    """
+    Consulta a SITUAÇÃO de uma NFe específica, pela CHAVE (consSitNFe / NFeConsultaProtocolo4).
+    """
+    try:
+        res = sefaz_nfe_consulta(
+            uf=payload.uf,
+            chave=payload.chNFe,
+            pfx_path=payload.certificado,
+            pfx_password=payload.senha,
+            ambiente=payload.ambiente,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao consultar NFe por chave: {e}",
+        )
+
+    return NFeConsultaChaveResponse(
+        status=res.cStat,
+        motivo=res.xMotivo,
+        xml_envio=res.xml_envio,
+        xml_retorno=res.xml_retorno,
+    )
+
+
+@app.post(
+    "/nfe/gtin",
+    response_model=NFeGTINResponse,
+    summary="Consultar GTIN (ccgConsGTIN – SVRS)",
+)
+def consultar_gtin(payload: NFeGTINRequest):
+    try:
+        resp = sefaz_consulta_gtin(
+            gtin=payload.gtin,
+            pfx_path=payload.certificado,
+            pfx_password=payload.senha,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao consultar GTIN: {e}")
+
+    return NFeGTINResponse(
+        status=resp.status,
+        motivo=resp.motivo,
+        xml_envio=resp.xml_envio,
+        xml_retorno=resp.xml_retorno,
+    )
+
+
+# 👉 NOVO ENDPOINT: /nfe/xmltodoc
+
+@app.post(
+    "/nfe/xmltodoc",
+    response_model=XmlToDocResponse,
+    summary="Converter XML de NFe em estrutura DocSped (JSON)",
+)
+def nfe_xml_to_doc(payload: XmlToDocRequest):
+    """
+    Converte o XML de NFe em uma estrutura DocSped, retornando em JSON.
+    - Aceita tanto <nfeProc> quanto apenas <NFe>/<infNFe>.
+    """
+    try:
+        doc = xml_to_doc(payload.xml)
+        return XmlToDocResponse(data=doc_sped_to_dict(doc))
+    except ValueError as e:
+        # Erros de validação do próprio parser (ex: tipo de documento não suportado)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao converter XML: {e}")

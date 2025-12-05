@@ -1,3 +1,5 @@
+fastapi
+uvicorn
 lxml
 signxml
 cryptography
@@ -5,3 +7,4 @@ requests
 requests-pkcs12
 zeep
 qrcode[pil]
+xmlsec

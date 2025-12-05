@@ -147,11 +147,22 @@ def enviar_soap_com_pfx(
         f_key.flush()
         f_cert.flush()
 
+        # Em SOAP 1.2 o "action" vai no Content-Type.
+        if endpoint.soap_action:
+            content_type = (
+                f'application/soap+xml; charset=utf-8; action="{endpoint.soap_action}"'
+            )
+        else:
+            content_type = "application/soap+xml; charset=utf-8"
+
         headers = {
-            # Igual ao MicrosoftXmlSoapPost do Harbour:
-            "Content-Type": "application/soap+xml; charset=utf-8",
-            "SOAPAction": endpoint.soap_action,
+            "Content-Type": content_type,
         }
+
+        # Alguns serviços ainda olham o header SOAPAction; mantemos se vier preenchido
+        if endpoint.soap_action:
+            headers["SOAPAction"] = endpoint.soap_action
+
 
         resp = requests.post(
             endpoint.url,
@@ -162,7 +173,8 @@ def enviar_soap_com_pfx(
             verify=False,  # ⚠ manter False enquanto não tiver cadeia da SEFAZ instalada
         )
 
-    resp.raise_for_status()
+    # NÃO dar raise_for_status aqui; deixamos quem chamou decidir.
+    # print("HTTP status SEFAZ:", resp.status_code)  # se quiser logar
     return resp
 
 
