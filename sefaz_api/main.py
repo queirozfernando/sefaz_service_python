@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import os
-from fastapi import FastAPI, HTTPException
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel, Field
+from lxml import etree
 
 from sefaz_service.core.nfe_envio import sefaz_nfe_envio
 from sefaz_service.core.nfe_inutilizacao import (
@@ -16,9 +20,9 @@ from sefaz_service.core.nfe_evento import (
 )
 from sefaz_service.core.nfe_status import sefaz_nfe_status
 from sefaz_service.core.nfe_consulta import sefaz_nfe_consulta  # consulta por chave
-from sefaz_service.core.nfe_gtin import sefaz_consulta_gtin
+from sefaz_service.core.nfe_gtin import sefaz_consulta_gtin, GtinResult
 
-# Conversão XML → DocSped
+# Conversão genérica XML → DocSped
 from sefaz_service.sped import xml_to_doc, doc_sped_to_dict
 
 # -------------------------------------------------------------------
@@ -28,10 +32,306 @@ from sefaz_service.sped import xml_to_doc, doc_sped_to_dict
 PFX_PATH = os.getenv("SEFAZ_PFX_PATH", r"C:\certificados\seu_certificado.pfx")
 PFX_PASSWORD = os.getenv("SEFAZ_PFX_PASSWORD", "senha_do_certificado")
 
+# Namespace NFe
+NFE_NS = "http://www.portalfiscal.inf.br/nfe"
+
+
+def _q(tag: str) -> str:
+    """Monta o nome qualificado com o namespace da NFe."""
+    return f"{{{NFE_NS}}}{tag}"
+
+
+def _parse_xml_root(xml: str) -> etree._Element:
+    """Parse robusto do XML bruto, retornando o root."""
+    try:
+        parser = etree.XMLParser(remove_blank_text=False, recover=True)
+        root = etree.fromstring(xml.encode("utf-8"), parser=parser)
+        return root
+    except Exception as exc:
+        raise ValueError(f"XML inválido: {exc}")
+
+
+def _text(child: Optional[etree._Element]) -> Optional[str]:
+    if child is not None and child.text is not None:
+        return child.text.strip()
+    return None
+
+
+@dataclass
+class XmlInfoResult:
+    ide: Optional[Dict[str, Any]]
+    emit: Optional[Dict[str, Any]]
+    dest: Optional[Dict[str, Any]]
+    totais: Dict[str, Any]
+    itens: Optional[List[Dict[str, Any]]]
+
+
+def _extract_xml_info_from_root(root: etree._Element) -> XmlInfoResult:
+    """
+    Extrai um resumo da NFe diretamente do XML:
+    ide, emit, dest, totais, itens.
+    Funciona para <nfeProc> ou apenas <NFe>/<infNFe>.
+    """
+    # Tenta achar infNFe em qualquer profundidade
+    inf_nfe = root.find(f".//{_q('infNFe')}")
+    if inf_nfe is None:
+        raise ValueError("Não foi encontrado o nó <infNFe> no XML.")
+
+    # --- IDE ---
+    ide_el = inf_nfe.find(_q("ide"))
+    ide: Optional[Dict[str, Any]] = None
+    if ide_el is not None:
+        ide = {
+            "cUF": _text(ide_el.find(_q("cUF"))),
+            "cNF": _text(ide_el.find(_q("cNF"))),
+            "natOp": _text(ide_el.find(_q("natOp"))),
+            "mod": _text(ide_el.find(_q("mod"))),
+            "serie": _text(ide_el.find(_q("serie"))),
+            "nNF": _text(ide_el.find(_q("nNF"))),
+            "dhEmi": _text(ide_el.find(_q("dhEmi"))),
+            "tpNF": _text(ide_el.find(_q("tpNF"))),
+            "idDest": _text(ide_el.find(_q("idDest"))),
+            "finNFe": _text(ide_el.find(_q("finNFe"))),
+            "indFinal": _text(ide_el.find(_q("indFinal"))),
+            "indPres": _text(ide_el.find(_q("indPres"))),
+            "tpAmb": _text(ide_el.find(_q("tpAmb"))),
+        }
+
+    # --- EMITENTE ---
+    emit_el = inf_nfe.find(_q("emit"))
+    emit: Optional[Dict[str, Any]] = None
+    if emit_el is not None:
+        ender_emit_el = emit_el.find(_q("enderEmit"))
+        emit = {
+            "CNPJ": _text(emit_el.find(_q("CNPJ"))),
+            "CPF": _text(emit_el.find(_q("CPF"))),
+            "xNome": _text(emit_el.find(_q("xNome"))),
+            "xFant": _text(emit_el.find(_q("xFant"))),
+            "IE": _text(emit_el.find(_q("IE"))),
+            "CRT": _text(emit_el.find(_q("CRT"))),
+            "enderEmit": None,
+        }
+        if ender_emit_el is not None:
+            emit["enderEmit"] = {
+                "xLgr": _text(ender_emit_el.find(_q("xLgr"))),
+                "nro": _text(ender_emit_el.find(_q("nro"))),
+                "xCpl": _text(ender_emit_el.find(_q("xCpl"))),
+                "xBairro": _text(ender_emit_el.find(_q("xBairro"))),
+                "cMun": _text(ender_emit_el.find(_q("cMun"))),
+                "xMun": _text(ender_emit_el.find(_q("xMun"))),
+                "UF": _text(ender_emit_el.find(_q("UF"))),
+                "CEP": _text(ender_emit_el.find(_q("CEP"))),
+                "cPais": _text(ender_emit_el.find(_q("cPais"))),
+                "xPais": _text(ender_emit_el.find(_q("xPais"))),
+                "fone": _text(ender_emit_el.find(_q("fone"))),
+            }
+
+    # --- DESTINATÁRIO ---
+    dest_el = inf_nfe.find(_q("dest"))
+    dest: Optional[Dict[str, Any]] = None
+    if dest_el is not None:
+        ender_dest_el = dest_el.find(_q("enderDest"))
+        dest = {
+            "CNPJ": _text(dest_el.find(_q("CNPJ"))),
+            "CPF": _text(dest_el.find(_q("CPF"))),
+            "xNome": _text(dest_el.find(_q("xNome"))),
+            "IE": _text(dest_el.find(_q("IE"))),
+            "indIEDest": _text(dest_el.find(_q("indIEDest"))),
+            "email": _text(dest_el.find(_q("email"))),
+            "enderDest": None,
+        }
+        if ender_dest_el is not None:
+            dest["enderDest"] = {
+                "xLgr": _text(ender_dest_el.find(_q("xLgr"))),
+                "nro": _text(ender_dest_el.find(_q("nro"))),
+                "xCpl": _text(ender_dest_el.find(_q("xCpl"))),
+                "xBairro": _text(ender_dest_el.find(_q("xBairro"))),
+                "cMun": _text(ender_dest_el.find(_q("cMun"))),
+                "xMun": _text(ender_dest_el.find(_q("xMun"))),
+                "UF": _text(ender_dest_el.find(_q("UF"))),
+                "CEP": _text(ender_dest_el.find(_q("CEP"))),
+                "cPais": _text(ender_dest_el.find(_q("cPais"))),
+                "xPais": _text(ender_dest_el.find(_q("xPais"))),
+                "fone": _text(ender_dest_el.find(_q("fone"))),
+            }
+
+    # --- TOTAIS ---
+    totais: Dict[str, Any] = {
+        "vProd": "0.00",
+        "vNF": "0.00",
+        "vDesc": "0.00",
+        "vICMS": "0.00",
+        "vICMSDeson": "0.00",
+        "vST": "0.00",
+        "vFrete": "0.00",
+        "vSeg": "0.00",
+        "vOutro": "0.00",
+        "vTotTrib": "0.00",
+        "vPIS": "0.00",
+        "vCOFINS": "0.00",
+    }
+    total_el = inf_nfe.find(_q("total"))
+    if total_el is not None:
+        icmstot_el = total_el.find(_q("ICMSTot"))
+        if icmstot_el is not None:
+            for campo in [
+                "vProd",
+                "vNF",
+                "vDesc",
+                "vICMS",
+                "vICMSDeson",
+                "vST",
+                "vFrete",
+                "vSeg",
+                "vOutro",
+                "vTotTrib",
+                "vPIS",
+                "vCOFINS",
+            ]:
+                v = _text(icmstot_el.find(_q(campo)))
+                if v is not None:
+                    totais[campo] = v
+
+    # --- ITENS ---
+    itens_list: List[Dict[str, Any]] = []
+    for det_el in inf_nfe.findall(_q("det")):
+        n_item = det_el.get("nItem")
+        prod_el = det_el.find(_q("prod"))
+        imposto_el = det_el.find(_q("imposto"))
+
+        item: Dict[str, Any] = {
+            "nItem": int(n_item) if n_item and n_item.isdigit() else None,
+        }
+
+        # PROD
+        if prod_el is not None:
+            item.update(
+                {
+                    "cProd": _text(prod_el.find(_q("cProd"))),
+                    "cEAN": _text(prod_el.find(_q("cEAN"))),
+                    "xProd": _text(prod_el.find(_q("xProd"))),
+                    "NCM": _text(prod_el.find(_q("NCM"))),
+                    "CEST": _text(prod_el.find(_q("CEST"))),
+                    "CFOP": _text(prod_el.find(_q("CFOP"))),
+                    "uCom": _text(prod_el.find(_q("uCom"))),
+                    "qCom": _text(prod_el.find(_q("qCom"))),
+                    "vUnCom": _text(prod_el.find(_q("vUnCom"))),
+                    "vProd": _text(prod_el.find(_q("vProd"))),
+                    "cEANTrib": _text(prod_el.find(_q("cEANTrib"))),
+                    "uTrib": _text(prod_el.find(_q("uTrib"))),
+                    "qTrib": _text(prod_el.find(_q("qTrib"))),
+                    "vUnTrib": _text(prod_el.find(_q("vUnTrib"))),
+                    "vDesc": _text(prod_el.find(_q("vDesc"))),
+                    "indTot": _text(prod_el.find(_q("indTot"))),
+                }
+            )
+        else:
+            item.update(
+                {
+                    "cProd": None,
+                    "cEAN": None,
+                    "xProd": None,
+                    "NCM": None,
+                    "CEST": None,
+                    "CFOP": None,
+                    "uCom": None,
+                    "qCom": None,
+                    "vUnCom": None,
+                    "vProd": None,
+                    "cEANTrib": None,
+                    "uTrib": None,
+                    "qTrib": None,
+                    "vUnTrib": None,
+                    "vDesc": None,
+                    "indTot": None,
+                }
+            )
+
+        # IMPOSTOS
+        icms_data: Dict[str, Any] = {
+            "orig": None,
+            "CST": None,
+            "CSOSN": None,
+            "modBC": None,
+            "vBC": None,
+            "pICMS": None,
+            "vICMS": None,
+        }
+        pis_data: Dict[str, Any] = {"CST": None, "vBC": None, "pPIS": None, "vPIS": None}
+        cofins_data: Dict[str, Any] = {
+            "CST": None,
+            "vBC": None,
+            "pCOFINS": None,
+            "vCOFINS": None,
+        }
+
+        if imposto_el is not None:
+            # ICMS (pega o primeiro ICMS* que encontrar)
+            icms_el = imposto_el.find(_q("ICMS"))
+            if icms_el is not None:
+                icms_any = None
+                for child in icms_el:
+                    if child.tag.startswith(_q("ICMS")):
+                        icms_any = child
+                        break
+                if icms_any is not None:
+                    icms_data["orig"] = _text(icms_any.find(_q("orig")))
+                    icms_data["CST"] = _text(icms_any.find(_q("CST")))
+                    icms_data["CSOSN"] = _text(icms_any.find(_q("CSOSN")))
+                    icms_data["modBC"] = _text(icms_any.find(_q("modBC")))
+                    icms_data["vBC"] = _text(icms_any.find(_q("vBC")))
+                    icms_data["pICMS"] = _text(icms_any.find(_q("pICMS")))
+                    icms_data["vICMS"] = _text(icms_any.find(_q("vICMS")))
+
+            # PIS
+            pis_el = imposto_el.find(_q("PIS"))
+            if pis_el is not None:
+                pis_any = None
+                for child in pis_el:
+                    pis_any = child
+                    break
+                if pis_any is not None:
+                    pis_data["CST"] = _text(pis_any.find(_q("CST")))
+                    pis_data["vBC"] = _text(pis_any.find(_q("vBC")))
+                    pis_data["pPIS"] = _text(pis_any.find(_q("pPIS")))
+                    pis_data["vPIS"] = _text(pis_any.find(_q("vPIS")))
+
+            # COFINS
+            cofins_el = imposto_el.find(_q("COFINS"))
+            if cofins_el is not None:
+                cof_any = None
+                for child in cofins_el:
+                    cof_any = child
+                    break
+                if cof_any is not None:
+                    cofins_data["CST"] = _text(cof_any.find(_q("CST")))
+                    cofins_data["vBC"] = _text(cof_any.find(_q("vBC")))
+                    cofins_data["pCOFINS"] = _text(cof_any.find(_q("pCOFINS")))
+                    cofins_data["vCOFINS"] = _text(cof_any.find(_q("vCOFINS")))
+
+        item["ICMS"] = icms_data
+        item["PIS"] = pis_data
+        item["COFINS"] = cofins_data
+
+        itens_list.append(item)
+
+    return XmlInfoResult(
+        ide=ide,
+        emit=emit,
+        dest=dest,
+        totais=totais,
+        itens=itens_list or None,
+    )
+
+
+# -------------------------------------------------------------------
+# FASTAPI APP
+# -------------------------------------------------------------------
+
 app = FastAPI(
     title="SEFAZ Service API",
     version="1.0.0",
-    description="API para envio de NFe, inutilização, eventos, consultas e análise de XML.",
+    description="API para envio de NFe, inutilização, eventos e consultas.",
 )
 
 # -------------------------------------------------------------------
@@ -179,223 +479,60 @@ class NFeGTINResponse(BaseModel):
     xml_retorno: str
 
 
-# 👉 XML → DocSped básicos
-
-class XmlToDocRequest(BaseModel):
-    xml: str = Field(
-        ...,
-        description="XML completo da NFe (pode ser <nfeProc> ou apenas <NFe>/<infNFe>).",
-    )
+# --------- MODELOS PARA XML BRUTO / RESUMO / ANÁLISE ---------
 
 
 class XmlToDocResponse(BaseModel):
-    data: dict
+    data: Dict[str, Any]
 
 
-# 👉 XMLINFO
-
-class NFeXmlInfoRequest(BaseModel):
-    xml: str = Field(
-        ...,
-        description="XML completo da NFe (pode ser <nfeProc> ou apenas <NFe>/<infNFe>).",
-    )
-
-
-class NFeXmlInfoResponse(BaseModel):
-    ide: dict | None = None
-    emit: dict | None = None
-    dest: dict | None = None
-    totais: dict | None = None
-    itens: list[dict] | None = None
+class XmlInfoResponse(BaseModel):
+    ide: Optional[Dict[str, Any]]
+    emit: Optional[Dict[str, Any]]
+    dest: Optional[Dict[str, Any]]
+    totais: Dict[str, Any]
+    itens: Optional[List[Dict[str, Any]]]
 
 
-# 👉 ANÁLISE
+class NFeAnaliseICMS(BaseModel):
+    uf_emit: Optional[str]
+    uf_dest: Optional[str]
+    operacao_interna: Optional[bool]
+    consumidor_final: Optional[bool]
+    contribuinte_destinatario: Optional[bool]
+    indIEDest: Optional[str]
+    regime_emitente: Optional[str]
+    possui_st: bool
+    possui_icms_proprio: bool
+    csts_icms: List[str]
+    observacoes: List[str]
 
-class NFeAnaliseRequest(BaseModel):
-    xml: str = Field(
-        ...,
-        description="XML completo da NFe (pode ser <nfeProc> ou apenas <NFe>/<infNFe>).",
-    )
 
-
-class CstResumo(BaseModel):
-    cst: str
-    qtd_itens: int
+class NFeAnalisePisCofins(BaseModel):
+    csts_pis: List[str]
+    csts_cofins: List[str]
+    monofasico_suspeito: bool
+    observacoes: List[str]
 
 
 class NFeAnaliseResponse(BaseModel):
-    # Informações gerais
-    tipo_operacao: str = Field(
-        ...,
-        description="ENTRADA ou SAIDA, com base em ide.tpNF (0=entrada,1=saída).",
-    )
-    destino_operacao: str = Field(
-        ...,
-        description="INTERNA, INTERESTADUAL ou EXTERIOR (ide.idDest ou UF emit/dest).",
-    )
-    consumidor_final: bool = Field(
-        ...,
-        description="True se ide.indFinal == '1'.",
-    )
-    contribuinte_destinatario: str = Field(
-        ...,
-        description="CONTRIBUINTE_ICMS / CONTRIBUINTE_ISENTO / NAO_CONTRIBUINTE / DESCONHECIDO.",
-    )
-    regime_emitente: str = Field(
-        ...,
-        description="SIMPLES_NACIONAL / SIMPLES_EXCESSO / REGIME_NORMAL / DESCONHECIDO.",
-    )
-
-    # Flags de análise tributária
-    possui_st: bool = Field(
-        ...,
-        description="True se houver ICMS com CST típico de ST (ex.: 10,30,60,70,90).",
-    )
-    possui_monofasico: bool = Field(
-        ...,
-        description="True se houver PIS/COFINS com CST monofásico (04,05,06,07,08,09).",
-    )
-
-    # Resumo de CST por imposto
-    cst_icms_resumo: list[CstResumo]
-    cst_pis_resumo: list[CstResumo]
-    cst_cofins_resumo: list[CstResumo]
+    ok: bool
+    mensagens: List[str]
+    icms: Optional[NFeAnaliseICMS]
+    pis_cofins: Optional[NFeAnalisePisCofins]
+    resumo: XmlInfoResponse
 
 
 # -------------------------------------------------------------------
-# HELPERS DE ANÁLISE
-# -------------------------------------------------------------------
-
-
-def _analisar_dados_nfe(data: dict) -> NFeAnaliseResponse:
-    ide = data.get("ide", {}) or {}
-    emit = data.get("emit", {}) or {}
-    dest = data.get("dest", {}) or {}
-    itens = data.get("itens", []) or []
-
-    # tipo_operacao (ENTRADA/SAIDA)
-    tpNF = (ide.get("tpNF") or "").strip()
-    if tpNF == "0":
-        tipo_operacao = "ENTRADA"
-    elif tpNF == "1":
-        tipo_operacao = "SAIDA"
-    else:
-        tipo_operacao = "DESCONHECIDO"
-
-    # destino_operacao
-    idDest = (ide.get("idDest") or "").strip()
-    if idDest == "1":
-        destino_operacao = "INTERNA"
-    elif idDest == "2":
-        destino_operacao = "INTERESTADUAL"
-    elif idDest == "3":
-        destino_operacao = "EXTERIOR"
-    else:
-        uf_emit = ((emit.get("enderEmit") or {}).get("UF") or "").strip()
-        uf_dest = ((dest.get("enderDest") or {}).get("UF") or "").strip()
-        if uf_emit and uf_dest:
-            destino_operacao = "INTERNA" if uf_emit == uf_dest else "INTERESTADUAL"
-        else:
-            destino_operacao = "DESCONHECIDO"
-
-    # consumidor_final
-    consumidor_final = (ide.get("indFinal") or "").strip() == "1"
-
-    # contribuinte_destinatario
-    indIEDest = (dest.get("indIEDest") or "").strip()
-    if indIEDest == "1":
-        contribuinte_destinatario = "CONTRIBUINTE_ICMS"
-    elif indIEDest == "2":
-        contribuinte_destinatario = "CONTRIBUINTE_ISENTO"
-    elif indIEDest == "9":
-        contribuinte_destinatario = "NAO_CONTRIBUINTE"
-    else:
-        contribuinte_destinatario = "DESCONHECIDO"
-
-    # regime_emitente (CRT)
-    crt = (emit.get("CRT") or "").strip()
-    if crt == "1":
-        regime_emitente = "SIMPLES_NACIONAL"
-    elif crt == "2":
-        regime_emitente = "SIMPLES_EXCESSO"
-    elif crt == "3":
-        regime_emitente = "REGIME_NORMAL"
-    else:
-        regime_emitente = "DESCONHECIDO"
-
-    # Resumos de CST e flags ST / monofásico
-    from collections import Counter
-
-    cst_icms_counter: Counter[str] = Counter()
-    cst_pis_counter: Counter[str] = Counter()
-    cst_cofins_counter: Counter[str] = Counter()
-
-    possui_st = False
-    possui_monofasico = False
-
-    cst_st_set = {"10", "30", "60", "70", "90"}
-    cst_monofasico_set = {"04", "05", "06", "07", "08", "09"}
-
-    for item in itens:
-        icms = item.get("ICMS") or {}
-        pis = item.get("PIS") or {}
-        cofins = item.get("COFINS") or {}
-
-        cst_icms = (icms.get("CST") or icms.get("CSOSN") or "").strip()
-        cst_pis = (pis.get("CST") or "").strip()
-        cst_cofins = (cofins.get("CST") or "").strip()
-
-        if cst_icms:
-            cst_icms_counter[cst_icms] += 1
-            if cst_icms in cst_st_set:
-                possui_st = True
-
-        if cst_pis:
-            cst_pis_counter[cst_pis] += 1
-            if cst_pis in cst_monofasico_set:
-                possui_monofasico = True
-
-        if cst_cofins:
-            cst_cofins_counter[cst_cofins] += 1
-            if cst_cofins in cst_monofasico_set:
-                possui_monofasico = True
-
-    cst_icms_resumo = [
-        CstResumo(cst=k, qtd_itens=v) for k, v in sorted(cst_icms_counter.items())
-    ]
-    cst_pis_resumo = [
-        CstResumo(cst=k, qtd_itens=v) for k, v in sorted(cst_pis_counter.items())
-    ]
-    cst_cofins_resumo = [
-        CstResumo(cst=k, qtd_itens=v) for k, v in sorted(cst_cofins_counter.items())
-    ]
-
-    return NFeAnaliseResponse(
-        tipo_operacao=tipo_operacao,
-        destino_operacao=destino_operacao,
-        consumidor_final=consumidor_final,
-        contribuinte_destinatario=contribuinte_destinatario,
-        regime_emitente=regime_emitente,
-        possui_st=possui_st,
-        possui_monofasico=possui_monofasico,
-        cst_icms_resumo=cst_icms_resumo,
-        cst_pis_resumo=cst_pis_resumo,
-        cst_cofins_resumo=cst_cofins_resumo,
-    )
-
-
-# -------------------------------------------------------------------
-# ENDPOINTS
+# ENDPOINTS EXISTENTES
 # -------------------------------------------------------------------
 
 
 @app.post("/nfe/enviar", response_model=NFeEnvioResponse, summary="Enviar NFe (autorização)")
 def enviar_nfe(payload: NFeAutorizarComCertRequest):
     """
-    Envia uma NFe para a SEFAZ usando certificado e senha enviados na requisição.
-    - Recebe XML da NFe sem assinatura.
-    - Usa o PFX informado (caminho + senha).
-    - Assina, monta enviNFe, envia via SOAP e retorna o resultado.
+    Envia uma NFe para a SEFAZ usando
+    certificado e senha enviados na requisição.
     """
     try:
         result = sefaz_nfe_envio(
@@ -595,8 +732,8 @@ def enviar_carta_correcao(payload: CartaCorrecaoRequest):
 )
 def consultar_status_servico_nfe(payload: NFeStatusRequest):
     """
-    Consulta o STATUS DO SERVIÇO de NFe (NFeStatusServico4) para a UF/ambiente informados.
-    Não é status da nota, e sim se o webservice está em operação (cStat 107/108 etc.).
+    Consulta o STATUS DO SERVIÇO de NFe (NFeStatusServico4).
+    Não é status da nota, e sim se o webservice está em operação.
     """
     try:
         res = sefaz_nfe_status(
@@ -626,7 +763,7 @@ def consultar_status_servico_nfe(payload: NFeStatusRequest):
 )
 def consultar_nfe_por_chave(payload: NFeConsultaChaveRequest):
     """
-    Consulta a SITUAÇÃO de uma NFe específica, pela CHAVE (consSitNFe / NFeConsultaProtocolo4).
+    Consulta a SITUAÇÃO de uma NFe específica, pela CHAVE.
     """
     try:
         res = sefaz_nfe_consulta(
@@ -673,86 +810,245 @@ def consultar_gtin(payload: NFeGTINRequest):
     )
 
 
-# 👉 /nfe/xmltodoc – devolve o DocSped inteiro em dict
+# -------------------------------------------------------------------
+# NOVOS ENDPOINTS: /nfe/xmltodoc, /nfe/xmlinfo, /nfe/analise
+# -------------------------------------------------------------------
+
 
 @app.post(
     "/nfe/xmltodoc",
     response_model=XmlToDocResponse,
-    summary="Converter XML de NFe em estrutura DocSped (JSON completo)",
+    summary="Converter XML de NFe em DocSped (JSON cru)",
 )
-def nfe_xml_to_doc(payload: XmlToDocRequest):
+def nfe_xml_to_doc(
+    xml_body: str = Body(
+        ...,
+        media_type="application/xml",
+        description="XML bruto da NFe (pode ser <nfeProc> ou apenas <NFe>/<infNFe>).",
+    )
+):
     """
-    Converte o XML de NFe em uma estrutura DocSped, retornando em JSON completo.
-    - Aceita tanto <nfeProc> quanto apenas <NFe>/<infNFe>.
+    Converte o XML bruto em DocSped (estrutura genérica), retornando o dict completo.
     """
     try:
-        doc = xml_to_doc(payload.xml)
-        return XmlToDocResponse(data=doc_sped_to_dict(doc))
+        doc = xml_to_doc(xml_body)
+        data = doc_sped_to_dict(doc)
+        return XmlToDocResponse(data=data)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao converter XML: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao converter XML em DocSped: {e}")
 
-
-# 👉 /nfe/xmlinfo – resumo (ide, emit, dest, totais, itens)
 
 @app.post(
     "/nfe/xmlinfo",
-    response_model=NFeXmlInfoResponse,
-    summary="Extrair informações principais da NFe (ide/emit/dest/totais/itens)",
+    response_model=XmlInfoResponse,
+    summary="Extrair informações resumidas da NFe (ide, emit, dest, totais, itens)",
 )
-def nfe_xml_info(payload: NFeXmlInfoRequest):
+def nfe_xml_info(
+    xml_body: str = Body(
+        ...,
+        media_type="application/xml",
+        description="XML bruto da NFe (pode ser <nfeProc> ou apenas <NFe>/<infNFe>).",
+    )
+):
     """
-    Converte o XML de NFe em DocSped e devolve apenas as informações principais,
-    úteis para front ou análise rápida.
+    Lê o XML bruto da NFe e devolve um resumo com:
+      - ide
+      - emit
+      - dest
+      - totais
+      - itens (com ICMS / PIS / COFINS básicos)
     """
     try:
-        doc = xml_to_doc(payload.xml)
-        data = doc_sped_to_dict(doc)
-
-        ide = data.get("ide") or {}
-        emit = data.get("emit") or {}
-        dest = data.get("dest") or {}
-        totais = data.get("totais") or data.get("total") or {}
-        itens = data.get("itens") or []
-
-        return NFeXmlInfoResponse(
-            ide=ide,
-            emit=emit,
-            dest=dest,
-            totais=totais,
-            itens=itens,
+        root = _parse_xml_root(xml_body)
+        info = _extract_xml_info_from_root(root)
+        return XmlInfoResponse(
+            ide=info.ide,
+            emit=info.emit,
+            dest=info.dest,
+            totais=info.totais,
+            itens=info.itens,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao extrair info do XML: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao ler informações do XML: {e}")
 
-
-# 👉 /nfe/analise – análise fiscal básica
 
 @app.post(
     "/nfe/analise",
     response_model=NFeAnaliseResponse,
-    summary="Análise fiscal básica da NFe (regime, ST, monofásico, CST etc.)",
+    summary="Analisar tributação da NFe (ICMS, PIS/COFINS) a partir do XML bruto",
 )
-def nfe_analise(payload: NFeAnaliseRequest):
+def nfe_analise(
+    xml_body: str = Body(
+        ...,
+        media_type="application/xml",
+        description="XML bruto da NFe (pode ser <nfeProc> ou apenas <NFe>/<infNFe>).",
+    )
+):
     """
-    Recebe o XML da NFe, converte para DocSped e devolve um resumo analítico:
-
-    - Entrada/Saída (ide.tpNF)
-    - Interna / Interestadual / Exterior (ide.idDest ou UF emit/dest)
-    - Consumidor final
-    - Situação do destinatário (indIEDest)
-    - Regime do emitente (CRT)
-    - Flags: possui ST, possui PIS/COFINS monofásico
-    - Resumo de CST de ICMS, PIS e COFINS
+    Faz uma análise básica da NFe:
+      - ICMS: operação interna/interestadual, consumidor final, ST, ICMS próprio, CRT, etc.
+      - PIS/COFINS: CSTs utilizados, possível regime monofásico.
+      - Retorna também o resumo de /nfe/xmlinfo.
     """
     try:
-        doc = xml_to_doc(payload.xml)
-        data = doc_sped_to_dict(doc)
-        return _analisar_dados_nfe(data)
+        root = _parse_xml_root(xml_body)
+        info = _extract_xml_info_from_root(root)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao analisar XML: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao processar XML: {e}")
+
+    ide = info.ide or {}
+    emit = info.emit or {}
+    dest = info.dest or {}
+    itens = info.itens or []
+
+    uf_emit = (emit.get("enderEmit") or {}).get("UF")
+    uf_dest = (dest.get("enderDest") or {}).get("UF")
+    operacao_interna: Optional[bool] = None
+    if uf_emit and uf_dest:
+        operacao_interna = uf_emit == uf_dest
+
+    consumidor_final: Optional[bool] = None
+    if ide.get("indFinal") is not None:
+        consumidor_final = ide.get("indFinal") == "1"
+
+    ind_ie_dest = dest.get("indIEDest")
+    contribuinte_dest: Optional[bool] = None
+    if ind_ie_dest == "1":
+        contribuinte_dest = True
+    elif ind_ie_dest in ("2", "9"):
+        contribuinte_dest = False
+
+    regime_emit = emit.get("CRT")
+
+    # --- ICMS por item ---
+    csts_icms: set[str] = set()
+    possui_st = False
+    possui_icms_proprio = False
+    obs_icms: List[str] = []
+
+    for it in itens:
+        icms = it.get("ICMS") or {}
+        cst = icms.get("CST") or icms.get("CSOSN")
+        if cst:
+            csts_icms.add(cst)
+
+            # ST (bem simplificado)
+            if cst in {"10", "30", "60", "70"} or it.get("CEST"):
+                possui_st = True
+
+            # ICMS próprio (simplificado)
+            if cst in {"00", "20", "51"}:
+                possui_icms_proprio = True
+
+    if operacao_interna is True:
+        obs_icms.append("Operação interna (UF emitente = UF destinatário).")
+    elif operacao_interna is False:
+        obs_icms.append("Operação interestadual (UF emitente ≠ UF destinatário).")
+
+    if consumidor_final is True:
+        obs_icms.append("Destinatário é consumidor final (indFinal=1).")
+    elif consumidor_final is False:
+        obs_icms.append("Destinatário não é consumidor final (indFinal≠1).")
+
+    if contribuinte_dest is True:
+        obs_icms.append("Destinatário é contribuinte do ICMS (indIEDest=1).")
+    elif contribuinte_dest is False:
+        obs_icms.append("Destinatário não contribuinte/isento (indIEDest=2 ou 9).")
+
+    if regime_emit == "1":
+        obs_icms.append("Emitente no Simples Nacional (CRT=1).")
+    elif regime_emit == "3":
+        obs_icms.append("Emitente no regime normal (CRT=3).")
+
+    if possui_st:
+        obs_icms.append(
+            "Nota com indícios de Substituição Tributária (CST ICMS de ST ou CEST preenchido)."
+        )
+    else:
+        obs_icms.append("Não foram identificados indícios de Substituição Tributária nos itens.")
+
+    if possui_icms_proprio:
+        obs_icms.append("Há itens com ICMS próprio destacado (CST 00/20/51).")
+    else:
+        obs_icms.append("Não foram identificados itens com ICMS próprio clássico (CST 00/20/51).")
+
+    analise_icms = NFeAnaliseICMS(
+        uf_emit=uf_emit,
+        uf_dest=uf_dest,
+        operacao_interna=operacao_interna,
+        consumidor_final=consumidor_final,
+        contribuinte_destinatario=contribuinte_dest,
+        indIEDest=ind_ie_dest,
+        regime_emitente=regime_emit,
+        possui_st=possui_st,
+        possui_icms_proprio=possui_icms_proprio,
+        csts_icms=sorted(csts_icms),
+        observacoes=obs_icms,
+    )
+
+    # --- PIS / COFINS ---
+    csts_pis: set[str] = set()
+    csts_cof: set[str] = set()
+    obs_pis_cof: List[str] = []
+
+    for it in itens:
+        pis = it.get("PIS") or {}
+        cof = it.get("COFINS") or {}
+
+        cst_pis = pis.get("CST")
+        cst_cof = cof.get("CST")
+        if cst_pis:
+            csts_pis.add(cst_pis)
+        if cst_cof:
+            csts_cof.add(cst_cof)
+
+    monof_csts = {"04", "06", "07", "08", "09", "49"}
+    monofasico_suspeito = bool(
+        monof_csts.intersection(csts_pis) or monof_csts.intersection(csts_cof)
+    )
+
+    if monofasico_suspeito:
+        obs_pis_cof.append(
+            "Foram encontrados CSTs de PIS/COFINS que indicam regime monofásico/suspensão/isenção "
+            "(ex.: 04, 06, 07, 08, 09, 49)."
+        )
+    else:
+        obs_pis_cof.append("CSTs de PIS/COFINS não indicam regime monofásico típico.")
+
+    if csts_pis:
+        obs_pis_cof.append(f"CSTs de PIS encontrados: {', '.join(sorted(csts_pis))}.")
+    if csts_cof:
+        obs_pis_cof.append(f"CSTs de COFINS encontrados: {', '.join(sorted(csts_cof))}.")
+
+    analise_pis_cof = NFeAnalisePisCofins(
+        csts_pis=sorted(csts_pis),
+        csts_cofins=sorted(csts_cof),
+        monofasico_suspeito=monofasico_suspeito,
+        observacoes=obs_pis_cof,
+    )
+
+    mensagens: List[str] = []
+    mensagens.extend(obs_icms)
+    mensagens.extend(obs_pis_cof)
+
+    ok = True
+
+    return NFeAnaliseResponse(
+        ok=ok,
+        mensagens=mensagens,
+        icms=analise_icms,
+        pis_cofins=analise_pis_cof,
+        resumo=XmlInfoResponse(
+            ide=info.ide,
+            emit=info.emit,
+            dest=info.dest,
+            totais=info.totais,
+            itens=info.itens,
+        ),
+    )
