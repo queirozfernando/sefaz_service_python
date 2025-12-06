@@ -1097,3 +1097,20 @@ def gerar_danfe_html_automatico(
             kwargs = dict(kwargs)
             kwargs["logo_url"] = kwargs.pop("logo_data_uri")
         return gerar_danfe_html(xml_str, **kwargs)
+
+
+def nfe_xml_to_html(
+    xml_data: bytes | str,
+    logo_url: Optional[str] = None,
+) -> str:
+    """
+    Wrapper para uso na API:
+    - aceita bytes ou string com o XML da NFe (nfeProc ou NFe)
+    - converte para str e delega para gerar_danfe_html.
+    """
+    if isinstance(xml_data, (bytes, bytearray)):
+        xml_str = xml_data.decode("utf-8")
+    else:
+        xml_str = xml_data
+
+    return gerar_danfe_html(xml_str, logo_url=logo_url)

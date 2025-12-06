@@ -1,6 +1,9 @@
 # sefaz_api/main.py
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -28,6 +31,8 @@ from sefaz_service.sped import xml_to_doc, doc_sped_to_dict
 
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.responses import HTMLResponse
+
+from sefaz_service.nfe.email_nfe import router as email_nfe_router
 
 
 # -------------------------------------------------------------------
@@ -338,6 +343,11 @@ app = FastAPI(
     version="1.0.0",
     description="API para envio de NFe, inutilização, eventos e consultas.",
 )
+
+
+# Rotas de envio de e-mail de NFe
+app.include_router(email_nfe_router, prefix="/nfe", tags=["Email NFe"])
+
 
 # -------------------------------------------------------------------
 # MODELOS Pydantic PARA REQUESTS/RESPONSES
@@ -1086,3 +1096,5 @@ def gerar_danfe_html_route(
             status_code=500,
             detail=f"Erro ao gerar DANFE em HTML: {e}",
         )
+
+

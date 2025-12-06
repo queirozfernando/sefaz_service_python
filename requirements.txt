@@ -9,3 +9,7 @@ zeep
 qrcode[pil]
 xmlsec
 python-barcode
+pdfkit
+python-dotenv
+python-multipart
+email-validator
