@@ -357,3 +357,5 @@ async def enviar_email_nfe(
         )
 
     return {"ok": True, "message": "E-mail enviado com sucesso."}
+
+
