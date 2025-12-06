@@ -346,7 +346,7 @@ app = FastAPI(
 
 
 # Rotas de envio de e-mail de NFe
-app.include_router(email_nfe_router, prefix="/nfe", tags=["Email NFe"])
+app.include_router(email_nfe_router, prefix="/nfe")
 
 
 # -------------------------------------------------------------------
