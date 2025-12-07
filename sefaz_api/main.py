@@ -40,7 +40,9 @@ from sefaz_service.sped import xml_to_doc, doc_sped_to_dict
 
 from sefaz_service.nfe.email_nfe import router as email_nfe_router
 from sefaz_api import nfe_schema_router
+from sefaz_service.core.cte_status import sefaz_cte_status, CTeStatusResult
 
+from sefaz_service.routers import mdfe_router
 
 # -------------------------------------------------------------------
 # METADADOS DE TAGS (GRUPOS NO SWAGGER)
@@ -71,7 +73,14 @@ tags_metadata = [
         "name": "NFe - E-mail",
         "description": "Envio de XML/DANFE da NFe por e-mail.",
     },
-
+    {
+        "name": "CTe - SEFAZ",
+        "description": "Autorização, consulta e status do serviço de CT-e.",
+    },
+    {
+        "name": "MDFe - SEFAZ",
+        "description": "Serviços de MDF-e: Status do serviço e consulta de MDF-e.",
+    },
 ]
 
 
@@ -397,6 +406,9 @@ app.include_router(
 app.include_router(nfe_schema_router.router)
 
 
+app.include_router(mdfe_router.router, prefix="/mdfe", tags=["MDFe - SEFAZ"])
+
+
 # -------------------------------------------------------------------
 # MODELOS Pydantic PARA REQUESTS/RESPONSES
 # -------------------------------------------------------------------
@@ -583,6 +595,67 @@ class NFeAnaliseResponse(BaseModel):
     icms: Optional[NFeAnaliseICMS]
     pis_cofins: Optional[NFeAnalisePisCofins]
     resumo: XmlInfoResponse
+
+# --------- MODELOS CTe (esqueleto inicial) ---------
+
+
+class CTeAutorizarRequest(BaseModel):
+    uf: str = Field(..., description="Sigla da UF, ex.: AC, SP, MG")
+    ambiente: str = Field("2", description="1=Producao, 2=Homologacao")
+    xml_cte: str = Field(..., description="XML do CT-e (sem assinatura ou já assinado, conforme implementação)")
+    certificado: str = Field(
+        ...,
+        description="Caminho completo do arquivo .pfx no servidor (ex.: C:\\Certificados\\cert.pfx)",
+    )
+    senha: str = Field(..., description="Senha do certificado PFX")
+
+
+class CTeEnvioResponse(BaseModel):
+    status: int | None
+    motivo: str | None
+    xml_assinado: str | None
+    xml_envi_cte: str | None
+    xml_retorno: str | None
+
+
+# em sefaz_api/main.py
+
+class CTeStatusRequest(BaseModel):
+    uf: str = Field(..., description="Sigla da UF, ex.: AC, SP, MG")
+    ambiente: str = Field("2", description="1=Producao, 2=Homologacao")
+    certificado: str = Field(..., description="Caminho do .pfx no servidor")
+    senha: str = Field(..., description="Senha do certificado PFX")
+    versao: Optional[str] = Field(
+        None,
+        description='Versão do layout do CT-e: "3.00" ou "4.00". Se não informar, usa 4.00.',
+    )
+
+
+class CTeStatusResponse(BaseModel):
+    status: Optional[int]
+    motivo: Optional[str]
+    xml_envio: str
+    xml_retorno: str
+
+
+
+class CTeConsultaChaveRequest(BaseModel):
+    uf: str = Field(..., description="Sigla da UF, ex.: AC, SP, MG")
+    ambiente: str = Field("2", description="1=Producao, 2=Homologacao")
+    chCTe: str = Field(..., description="Chave completa do CT-e (44 dígitos)")
+    certificado: str = Field(
+        ...,
+        description="Caminho completo do arquivo .pfx no servidor (ex.: C:\\Certificados\\cert.pfx)",
+    )
+    senha: str = Field(..., description="Senha do certificado PFX")
+
+
+class CTeConsultaChaveResponse(BaseModel):
+    status: int | None
+    motivo: str | None
+    xml_envio: str | None
+    xml_retorno: str | None
+
 
 
 # -------------------------------------------------------------------
@@ -1198,3 +1271,83 @@ def gerar_danfe_pdf_route(
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="danfe.pdf"'},
     )
+
+
+# -------------------------------------------------------------------
+# ENDPOINTS CTe (esqueleto inicial, ainda sem integração real)
+# -------------------------------------------------------------------
+
+
+@app.post(
+    "/cte/enviar",
+    response_model=CTeEnvioResponse,
+    summary="Enviar CT-e (autorização)",
+    tags=["CTe - SEFAZ"],
+)
+def cte_enviar(payload: CTeAutorizarRequest):
+    """
+    Envia um CT-e para a SEFAZ.
+
+    Neste primeiro momento é apenas um **stub** para testar o layout da API.
+    Depois ligamos na função real (ex.: sefaz_cte_envio).
+    """
+    # TODO: integrar com sefaz_cte_envio(...)
+    return CTeEnvioResponse(
+        status=999,
+        motivo="Stub de CT-e: integração ainda não implementada.",
+        xml_assinado=None,
+        xml_envi_cte=None,
+        xml_retorno=None,
+    )
+
+
+@app.post(
+    "/cte/status",
+    response_model=CTeStatusResponse,
+    summary="Consultar status do SERVIÇO CT-e (CTeStatusServico)",
+    tags=["CTe - SEFAZ"],
+)
+def consultar_status_cte(payload: CTeStatusRequest):
+    versao = payload.versao or "4.00"
+
+    try:
+        res: CTeStatusResult = sefaz_cte_status(
+            uf=payload.uf,
+            pfx_path=payload.certificado,
+            pfx_password=payload.senha,
+            ambiente=payload.ambiente,
+            versao=versao,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao consultar status do servico CT-e: {e}",
+        )
+
+    return CTeStatusResponse(
+        status=res.status,
+        motivo=res.motivo,
+        xml_envio=res.xml_envio,
+        xml_retorno=res.xml_retorno,
+    )
+
+
+@app.post(
+    "/cte/consulta",
+    response_model=CTeConsultaChaveResponse,
+    summary="Consultar situação de CT-e por CHAVE",
+    tags=["CTe - SEFAZ"],
+)
+def cte_consulta_chave(payload: CTeConsultaChaveRequest):
+    """
+    Consulta a SITUAÇÃO de um CT-e específico, pela CHAVE.
+    Por enquanto, apenas stub.
+    """
+    # TODO: integrar com sefaz_cte_consulta(...)
+    return CTeConsultaChaveResponse(
+        status=999,
+        motivo="Stub de CT-e: integração ainda não implementada.",
+        xml_envio=None,
+        xml_retorno=None,
+    )
+
