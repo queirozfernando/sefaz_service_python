@@ -4,11 +4,16 @@ from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv()
 
+import io
+from fastapi.responses import StreamingResponse
+
+
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Body
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from lxml import etree
 
@@ -24,15 +29,50 @@ from sefaz_service.core.nfe_evento import (
 from sefaz_service.core.nfe_status import sefaz_nfe_status
 from sefaz_service.core.nfe_consulta import sefaz_nfe_consulta  # consulta por chave
 from sefaz_service.core.nfe_gtin import sefaz_consulta_gtin, GtinResult
-from sefaz_service.danfe.danfe_html import gerar_danfe_html_automatico
+from sefaz_service.danfe.danfe_html import (
+    gerar_danfe_html_automatico,
+    gerar_danfe_pdf_automatico,
+)
+
 
 # Conversão genérica XML → DocSped
 from sefaz_service.sped import xml_to_doc, doc_sped_to_dict
 
-from fastapi import FastAPI, HTTPException, Body
-from fastapi.responses import HTMLResponse
-
 from sefaz_service.nfe.email_nfe import router as email_nfe_router
+from sefaz_api import nfe_schema_router
+
+
+# -------------------------------------------------------------------
+# METADADOS DE TAGS (GRUPOS NO SWAGGER)
+# -------------------------------------------------------------------
+
+tags_metadata = [
+    {
+        "name": "NFe - SEFAZ",
+        "description": "Autorização, inutilização, status do serviço, consulta por chave, GTIN, etc.",
+    },
+    {
+        "name": "NFe - Eventos",
+        "description": "Cancelamento, cancelamento por substituição, carta de correção.",
+    },
+    {
+        "name": "NFe - Utilitários",
+        "description": "Conversão XML→DocSped, extração de informações e análise tributária.",
+    },
+    {
+        "name": "NFe - DANFE",
+        "description": "Geração de DANFE (NF-e) ou NFC-e em HTML ou PDF a partir do XML bruto.",
+    },
+    {
+        "name": "NFe - Validação",
+        "description": "Validação de XML de NFe com base nos schemas oficiais (XSD).",
+    },
+    {
+        "name": "NFe - E-mail",
+        "description": "Envio de XML/DANFE da NFe por e-mail.",
+    },
+
+]
 
 
 # -------------------------------------------------------------------
@@ -341,18 +381,25 @@ def _extract_xml_info_from_root(root: etree._Element) -> XmlInfoResult:
 app = FastAPI(
     title="SEFAZ Service API",
     version="1.0.0",
-    description="API para envio de NFe, inutilização, eventos e consultas.",
+    description="API para envio de NFe, inutilização, eventos, consultas e utilitários.",
+    openapi_tags=tags_metadata,
+)
+
+# Rotas de envio de e-mail de NFe
+app.include_router(
+    email_nfe_router,
+    prefix="/nfe",
+    tags=["NFe - E-mail"],
 )
 
 
-# Rotas de envio de e-mail de NFe
-app.include_router(email_nfe_router, prefix="/nfe")
+# Rotas de verificação de esquemas XSD (já vêm com tag 'NFe - Validação' no router)
+app.include_router(nfe_schema_router.router)
 
 
 # -------------------------------------------------------------------
 # MODELOS Pydantic PARA REQUESTS/RESPONSES
 # -------------------------------------------------------------------
-
 
 class NFeAutorizarComCertRequest(BaseModel):
     uf: str = Field(..., description="Sigla da UF, ex.: AC, SP, MG")
@@ -542,8 +589,12 @@ class NFeAnaliseResponse(BaseModel):
 # ENDPOINTS EXISTENTES
 # -------------------------------------------------------------------
 
-
-@app.post("/nfe/enviar", response_model=NFeEnvioResponse, summary="Enviar NFe (autorização)")
+@app.post(
+    "/nfe/enviar",
+    response_model=NFeEnvioResponse,
+    summary="Enviar NFe (autorização)",
+    tags=["NFe - SEFAZ"],
+)
 def enviar_nfe(payload: NFeAutorizarComCertRequest):
     """
     Envia uma NFe para a SEFAZ usando
@@ -572,7 +623,12 @@ def enviar_nfe(payload: NFeAutorizarComCertRequest):
     )
 
 
-@app.post("/nfe/inutilizar", response_model=InutilizacaoAPIResponse, summary="Inutilizar numeração de NFe")
+@app.post(
+    "/nfe/inutilizar",
+    response_model=InutilizacaoAPIResponse,
+    summary="Inutilizar numeração de NFe",
+    tags=["NFe - SEFAZ"],
+)
 def inutilizar_numeracao(payload: InutilizacaoAPIRequest):
     """
     Inutilização de numeração de NFe (NFeInutilizacao4).
@@ -608,7 +664,12 @@ def inutilizar_numeracao(payload: InutilizacaoAPIRequest):
     )
 
 
-@app.post("/nfe/evento/cancelar", response_model=EventoAPIResponse, summary="Cancelar NFe (evento 110111)")
+@app.post(
+    "/nfe/evento/cancelar",
+    response_model=EventoAPIResponse,
+    summary="Cancelar NFe (evento 110111)",
+    tags=["NFe - Eventos"],
+)
 def cancelar_nfe(payload: CancelamentoRequest):
     """
     Envia evento de CANCELAMENTO (110111).
@@ -651,6 +712,7 @@ def cancelar_nfe(payload: CancelamentoRequest):
     "/nfe/evento/cancelar-substituicao",
     response_model=EventoAPIResponse,
     summary="Cancelar NFe por substituição (evento 110112)",
+    tags=["NFe - Eventos"],
 )
 def cancelar_nfe_por_substituicao(payload: CancelamentoSubstRequest):
     """
@@ -697,6 +759,7 @@ def cancelar_nfe_por_substituicao(payload: CancelamentoSubstRequest):
     "/nfe/evento/carta-correcao",
     response_model=EventoAPIResponse,
     summary="Enviar Carta de Correcao (evento 110110)",
+    tags=["NFe - Eventos"],
 )
 def enviar_carta_correcao(payload: CartaCorrecaoRequest):
     """
@@ -744,6 +807,7 @@ def enviar_carta_correcao(payload: CartaCorrecaoRequest):
     "/nfe/status",
     response_model=NFeStatusResponse,
     summary="Consultar status do SERVIÇO NFe (NFeStatusServico4)",
+    tags=["NFe - SEFAZ"],
 )
 def consultar_status_servico_nfe(payload: NFeStatusRequest):
     """
@@ -775,6 +839,7 @@ def consultar_status_servico_nfe(payload: NFeStatusRequest):
     "/nfe/consulta",
     response_model=NFeConsultaChaveResponse,
     summary="Consultar situação de NFe por CHAVE (NFeConsultaProtocolo4)",
+    tags=["NFe - SEFAZ"],
 )
 def consultar_nfe_por_chave(payload: NFeConsultaChaveRequest):
     """
@@ -806,6 +871,7 @@ def consultar_nfe_por_chave(payload: NFeConsultaChaveRequest):
     "/nfe/gtin",
     response_model=NFeGTINResponse,
     summary="Consultar GTIN (ccgConsGTIN – SVRS)",
+    tags=["NFe - SEFAZ"],
 )
 def consultar_gtin(payload: NFeGTINRequest):
     try:
@@ -829,11 +895,11 @@ def consultar_gtin(payload: NFeGTINRequest):
 # NOVOS ENDPOINTS: /nfe/xmltodoc, /nfe/xmlinfo, /nfe/analise
 # -------------------------------------------------------------------
 
-
 @app.post(
     "/nfe/xmltodoc",
     response_model=XmlToDocResponse,
     summary="Converter XML de NFe em DocSped (JSON cru)",
+    tags=["NFe - Utilitários"],
 )
 def nfe_xml_to_doc(
     xml_body: str = Body(
@@ -859,6 +925,7 @@ def nfe_xml_to_doc(
     "/nfe/xmlinfo",
     response_model=XmlInfoResponse,
     summary="Extrair informações resumidas da NFe (ide, emit, dest, totais, itens)",
+    tags=["NFe - Utilitários"],
 )
 def nfe_xml_info(
     xml_body: str = Body(
@@ -895,6 +962,7 @@ def nfe_xml_info(
     "/nfe/analise",
     response_model=NFeAnaliseResponse,
     summary="Analisar tributação da NFe (ICMS, PIS/COFINS) a partir do XML bruto",
+    tags=["NFe - Utilitários"],
 )
 def nfe_analise(
     xml_body: str = Body(
@@ -1073,6 +1141,7 @@ def nfe_analise(
     "/danfe/html",
     response_class=HTMLResponse,
     summary="Gerar DANFE (NF-e ou NFC-e) em HTML a partir do XML bruto",
+    tags=["NFe - DANFE"],
 )
 def gerar_danfe_html_route(
     xml: str = Body(..., media_type="application/xml"),
@@ -1098,3 +1167,34 @@ def gerar_danfe_html_route(
         )
 
 
+@app.post(
+    "/danfe/pdf",
+    response_class=StreamingResponse,
+    summary="Gerar DANFE (NF-e ou NFC-e) em PDF a partir do XML bruto",
+    tags=["NFe - DANFE"],
+)
+def gerar_danfe_pdf_route(
+    xml: str = Body(..., media_type="application/xml"),
+):
+    """
+    Recebe o XML bruto da NF-e ou NFC-e e devolve o DANFE em PDF.
+
+    - Se o XML for de NF-e (mod=55) usa o layout retrato.
+    - Se o XML for de NFC-e (mod=65) usa o cupom 80mm (convertido para PDF).
+    - O XML pode ser <nfeProc> completo ou somente <NFe>/<infNFe>.
+    """
+    try:
+        pdf_bytes = gerar_danfe_pdf_automatico(xml)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao gerar DANFE em PDF: {e}",
+        )
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="danfe.pdf"'},
+    )

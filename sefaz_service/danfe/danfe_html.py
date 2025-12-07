@@ -1,6 +1,9 @@
 # sefaz_service/danfe/danfe_html.py
 from __future__ import annotations
 
+import io
+import pdfkit
+
 from typing import Optional, List
 from io import BytesIO
 import base64
@@ -1097,6 +1100,29 @@ def gerar_danfe_html_automatico(
             kwargs = dict(kwargs)
             kwargs["logo_url"] = kwargs.pop("logo_data_uri")
         return gerar_danfe_html(xml_str, **kwargs)
+
+
+def gerar_danfe_pdf_automatico(xml: str) -> bytes:
+    """
+    Gera o DANFE em PDF (bytes) a partir do XML bruto.
+    - Usa o mesmo HTML gerado por gerar_danfe_html_automatico().
+    - Converte o HTML em PDF usando pdfkit + wkhtmltopdf.
+    """
+    html = gerar_danfe_html_automatico(xml)
+
+    # Opções básicas para A4 retrato (ajusta se quiser)
+    options = {
+        "page-size": "A4",
+        "encoding": "UTF-8",
+        "margin-top": "5mm",
+        "margin-right": "5mm",
+        "margin-bottom": "5mm",
+        "margin-left": "5mm",
+    }
+
+    pdf_bytes: bytes = pdfkit.from_string(html, False, options=options)
+    return pdf_bytes
+
 
 
 def nfe_xml_to_html(
