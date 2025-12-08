@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.serialization import (
 from lxml import etree
 import xmlsec
 
+# Namespace da NFe (mantido por compatibilidade, se precisar)
 NFE_NS = "http://www.portalfiscal.inf.br/nfe"
 
 
@@ -60,10 +61,17 @@ def _limpar_whitespace_subarvore(elem: etree._Element) -> None:
             node.tail = ""
 
 
-def assinar_nfe_xml(xml: str, pfx_path: str, pfx_password: str) -> str:
+def _assinar_xml_generico(
+    xml: str,
+    tag_inf: str,          # "infNFe" ou "infMDFe"
+    pfx_path: str,
+    pfx_password: str,
+) -> str:
     """
-    Assina uma NFe (modelo 55 ou 65) usando o PFX informado.
-    Retorna o XML da NFe assinada.
+    Assina um XML (NFe, MDFe, etc.) usando o PFX informado.
+
+    - Localiza a tag informada (ex.: "infNFe" ou "infMDFe") via local-name().
+    - Usa xmlsec com RSA-SHA1 + C14N (como SEFAZ espera).
     """
 
     # 0) Remover caracteres de edição básicos no XML antes de assinar
@@ -75,22 +83,28 @@ def assinar_nfe_xml(xml: str, pfx_path: str, pfx_password: str) -> str:
     root = etree.fromstring(xml.encode("utf-8"), parser=parser)
 
     # Se vier <nfeProc>, pegar apenas <NFe>
-    if root.tag.endswith("nfeProc"):
-        ns = {"nfe": NFE_NS}
-        nfe_el = root.find("nfe:NFe", ns)
-        if nfe_el is None:
+    if root.tag.endswith("nfeProc") and tag_inf == "infNFe":
+        nfe_list = root.xpath(".//*[local-name()='NFe']")
+        if not nfe_list:
             raise ValueError("XML nfeProc sem nó <NFe>")
-        root = nfe_el
+        root = nfe_list[0]
 
-    # 2) Localizar <infNFe> e Id
-    ns = {"nfe": NFE_NS}
-    inf = root.find("nfe:infNFe", ns)
-    if inf is None:
-        raise ValueError("Não encontrado <infNFe>")
+    # Se vier <mdfeProc>, pegar apenas <MDFe>
+    if root.tag.endswith("mdfeProc") and tag_inf == "infMDFe":
+        mdfe_list = root.xpath(".//*[local-name()='MDFe']")
+        if not mdfe_list:
+            raise ValueError("XML mdfeProc sem nó <MDFe>")
+        root = mdfe_list[0]
+
+    # 2) Localizar <infNFe> ou <infMDFe> pela local-name
+    inf_list = root.xpath(f".//*[local-name()='{tag_inf}']")
+    if not inf_list:
+        raise ValueError(f"Não encontrado <{tag_inf}>")
+    inf = inf_list[0]
 
     inf_id = inf.get("Id")
     if not inf_id:
-        raise ValueError("<infNFe> sem atributo Id")
+        raise ValueError(f"<{tag_inf}> sem atributo Id")
 
     # 3) Registrar ID
     xmlsec.tree.add_ids(root, ["Id"])
@@ -103,7 +117,7 @@ def assinar_nfe_xml(xml: str, pfx_path: str, pfx_password: str) -> str:
     )
     root.append(signature_node)
 
-    # Referência ao infNFe
+    # Referência à tag (infNFe ou infMDFe)
     ref = xmlsec.template.add_reference(
         signature_node,
         xmlsec.Transform.SHA1,
@@ -171,3 +185,20 @@ def assinar_nfe_xml(xml: str, pfx_path: str, pfx_password: str) -> str:
     xml_str = xml_bytes.decode("utf-8")
 
     return xml_str
+
+
+# --------------------------------------------------------
+# Wrappers específicos (mantém compatibilidade)
+# --------------------------------------------------------
+def assinar_nfe_xml(xml: str, pfx_path: str, pfx_password: str) -> str:
+    """
+    Assina uma NFe (modelo 55 ou 65).
+    """
+    return _assinar_xml_generico(xml, "infNFe", pfx_path, pfx_password)
+
+
+def assinar_mdfe_xml(xml: str, pfx_path: str, pfx_password: str) -> str:
+    """
+    Assina um MDFe (modelo 58).
+    """
+    return _assinar_xml_generico(xml, "infMDFe", pfx_path, pfx_password)
