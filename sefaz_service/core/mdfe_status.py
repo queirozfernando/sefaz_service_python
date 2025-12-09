@@ -1,178 +1,118 @@
-# sefaz_service/core/mdfe_status.py
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal
 
 from lxml import etree
-from requests_pkcs12 import post
+import requests_pkcs12
 
-# Namespace MDF-e
-MDFE_NS = "http://www.portalfiscal.inf.br/mdfe"
+from sefaz_service.core.uf_utils import uf_to_cuf, mdfe_url_status
 
-# Namespace base do WSDL de status MDF-e
-MDFE_WSDL_NS = "http://www.portalfiscal.inf.br/mdfe/wsdl/MDFeStatusServico"
-
-# códigos de UF (IBGE)
-UF_CODIGOS = {
-    "RO": "11",
-    "AC": "12",
-    "AM": "13",
-    "RR": "14",
-    "PA": "15",
-    "AP": "16",
-    "TO": "17",
-    "MA": "21",
-    "PI": "22",
-    "CE": "23",
-    "RN": "24",
-    "PB": "25",
-    "PE": "26",
-    "AL": "27",
-    "SE": "28",
-    "BA": "29",
-    "MG": "31",
-    "ES": "32",
-    "RJ": "33",
-    "SP": "35",
-    "PR": "41",
-    "SC": "42",
-    "RS": "43",
-    "MS": "50",
-    "MT": "51",
-    "GO": "52",
-    "DF": "53",
-}
+MDFe_NS = "http://www.portalfiscal.inf.br/mdfe"
+SOAP_ENV_NS = "http://www.w3.org/2003/05/soap-envelope"
+MDFe_WSDL_STATUS = "http://www.portalfiscal.inf.br/mdfe/wsdl/MDFeStatusServico"
 
 
 @dataclass
-class MDFeStatusResult:
-    status: Optional[int]
-    motivo: Optional[str]
+class MDFeResultado:
+    status: str
+    motivo: str
     xml_envio: str
     xml_retorno: str
 
 
-def _resolver_url_mdfe_status(uf: str, ambiente: str) -> str:
-    """
-    Resolve o endpoint do MDFeStatusServico (SVRS para AC e demais UFs atendidas).
-    """
-    uf = (uf or "").upper()
+def _monta_xml_status(uf: str, ambiente: Literal["1", "2"]) -> str:
+    cuf = uf_to_cuf(uf)
 
-    if uf in {
-        "AC", "AL", "AP", "DF", "ES", "PB", "PI",
-        "RJ", "RN", "RO", "RR", "SC", "SE", "TO",
-        "BA", "PA",
-    }:
-        return (
-            "https://mdfe.svrs.rs.gov.br/ws/MDFeStatusServico/MDFeStatusServico.asmx"
-            if ambiente == "1"
-            else "https://mdfe-homologacao.svrs.rs.gov.br/ws/MDFeStatusServico/MDFeStatusServico.asmx"
-        )
-
-    # fallback: usa SVRS também
-    return (
-        "https://mdfe.svrs.rs.gov.br/ws/MDFeStatusServico/MDFeStatusServico.asmx"
-        if ambiente == "1"
-        else "https://mdfe-homologacao.svrs.rs.gov.br/ws/MDFeStatusServico/MDFeStatusServico.asmx"
+    root = etree.Element(
+        "consStatServMDFe",
+        nsmap={None: MDFe_NS},
+        versao="3.00",
     )
+    etree.SubElement(root, "tpAmb").text = str(ambiente)
+    etree.SubElement(root, "cUF").text = cuf
+    etree.SubElement(root, "xServ").text = "STATUS"
 
-
-def _montar_xml_mdfe(tp_amb: str) -> str:
-    """
-    Layout 3.00 do consStatServMDFe **sem cUF no corpo**:
-
-        <consStatServMDFe versao="3.00" xmlns="http://www.portalfiscal.inf.br/mdfe">
-            <tpAmb>1</tpAmb>
-            <xServ>STATUS</xServ>
-        </consStatServMDFe>
-    """
-    return (
-        f'<consStatServMDFe versao="3.00" xmlns="{MDFE_NS}">'
-        f"<tpAmb>{tp_amb}</tpAmb>"
-        "<xServ>STATUS</xServ>"
-        "</consStatServMDFe>"
+    xml_bytes = etree.tostring(
+        root, encoding="utf-8", xml_declaration=True, pretty_print=False
     )
+    return xml_bytes.decode("utf-8")
+
+
+def _monta_envelope_soap(xml_corpo: str, uf: str) -> str:
+    cuf = uf_to_cuf(uf)
+
+    nsmap_env = {
+        "soap12": SOAP_ENV_NS,
+        "xsi": "http://www.w3.org/2001/XMLSchema-instance",
+        "xsd": "http://www.w3.org/2001/XMLSchema",
+    }
+    envelope = etree.Element(etree.QName(SOAP_ENV_NS, "Envelope"), nsmap=nsmap_env)
+
+    header = etree.SubElement(envelope, etree.QName(SOAP_ENV_NS, "Header"))
+    cabec = etree.SubElement(header, "mdfeCabecMsg", xmlns=MDFe_WSDL_STATUS)
+    etree.SubElement(cabec, "cUF").text = cuf
+    etree.SubElement(cabec, "versaoDados").text = "3.00"
+
+    body = etree.SubElement(envelope, etree.QName(SOAP_ENV_NS, "Body"))
+    dados_msg = etree.SubElement(body, "mdfeDadosMsg", xmlns=MDFe_WSDL_STATUS)
+
+    corpo_root = etree.fromstring(xml_corpo.encode("utf-8"))
+    dados_msg.append(corpo_root)
+
+    xml_bytes = etree.tostring(
+        envelope, encoding="utf-8", xml_declaration=True, pretty_print=False
+    )
+    return xml_bytes.decode("utf-8")
+
+
+def _extrai_status_motivo(xml_retorno: str) -> tuple[str, str]:
+    try:
+        root = etree.fromstring(xml_retorno.encode("utf-8"))
+    except Exception:
+        return "", ""
+
+    cstat = ""
+    xmotivo = ""
+    for el in root.iter():
+        tag = etree.QName(el).localname
+        if tag == "cStat" and not cstat:
+            cstat = (el.text or "").strip()
+        elif tag == "xMotivo" and not xmotivo:
+            xmotivo = (el.text or "").strip()
+    return cstat, xmotivo
 
 
 def sefaz_mdfe_status(
     uf: str,
-    pfx_path: str,
-    pfx_password: str,
-    ambiente: str = "2",
-) -> MDFeStatusResult:
-    """
-    Consulta STATUS do serviço de MDF-e (MDFeStatusServico),
-    usando certificado A1 (arquivo .pfx) via SOAP 1.2.
-    """
-    tp_amb = "1" if ambiente == "1" else "2"
-    uf = (uf or "").upper()
-    cuf = UF_CODIGOS.get(uf, uf)
+    ambiente: Literal["1", "2"],
+    certificado: str,
+    senha: str,
+) -> MDFeResultado:
+    xml_corpo = _monta_xml_status(uf=uf, ambiente=ambiente)
+    xml_envelope = _monta_envelope_soap(xml_corpo, uf=uf)
 
-    # XML interno, SEM cUF
-    xml_envio = _montar_xml_mdfe(tp_amb=tp_amb)
+    url = mdfe_url_status(ambiente)
 
-    # Envelope SOAP 1.2 com mdfeCabecMsg (cUF/versaoDados) + mdfeDadosMsg
-    envelope = f"""<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
-               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-               xmlns:xsd="http://www.w3.org/2001/XMLSchema">
-  <soap:Header>
-    <mdfeCabecMsg xmlns="{MDFE_WSDL_NS}">
-      <cUF>{cuf}</cUF>
-      <versaoDados>3.00</versaoDados>
-    </mdfeCabecMsg>
-  </soap:Header>
-  <soap:Body>
-    <mdfeDadosMsg xmlns="{MDFE_WSDL_NS}">
-      {xml_envio}
-    </mdfeDadosMsg>
-  </soap:Body>
-</soap:Envelope>
-"""
+    headers = {
+        "Content-Type": 'application/soap+xml; charset="utf-8"',
+    }
 
-    url = _resolver_url_mdfe_status(uf=uf, ambiente=ambiente)
-
-    resp = post(
+    resp = requests_pkcs12.post(
         url,
-        data=envelope.encode("utf-8"),
-        pkcs12_filename=pfx_path,
-        pkcs12_password=pfx_password,
-        headers={
-            # SOAP 1.2: Content-Type application/soap+xml (sem SOAPAction separado)
-            "Content-Type": 'application/soap+xml; charset="utf-8"',
-        },
+        data=xml_envelope.encode("utf-8"),
+        headers=headers,
+        pkcs12_filename=certificado,
+        pkcs12_password=senha,
         timeout=30,
-        verify=False,
     )
 
     xml_retorno = resp.text
+    cstat, xmotivo = _extrai_status_motivo(xml_retorno)
 
-    status_int: Optional[int] = None
-    motivo_str: Optional[str] = None
-
-    try:
-        root = etree.fromstring(xml_retorno.encode("utf-8"))
-        ns = {"mdfe": MDFE_NS}
-
-        cstat_el = root.find(".//mdfe:cStat", namespaces=ns)
-        xmot_el = root.find(".//mdfe:xMotivo", namespaces=ns)
-
-        if cstat_el is not None and cstat_el.text:
-            try:
-                status_int = int(cstat_el.text.strip())
-            except ValueError:
-                status_int = None
-
-        if xmot_el is not None and xmot_el.text:
-            motivo_str = xmot_el.text.strip()
-    except Exception:
-        # Se der erro de parse, não estoura exceção aqui
-        pass
-
-    return MDFeStatusResult(
-        status=status_int,
-        motivo=motivo_str,
-        xml_envio=xml_envio,
+    return MDFeResultado(
+        status=cstat or str(resp.status_code),
+        motivo=xmotivo or f"Retorno HTTP {resp.status_code}",
+        xml_envio=xml_envelope,
         xml_retorno=xml_retorno,
     )

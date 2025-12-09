@@ -1,174 +1,124 @@
-# sefaz_service/core/mdfe_consulta.py
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal
 
 from lxml import etree
-from requests_pkcs12 import post  # pacote requests-pkcs12
+import requests_pkcs12
 
-# Namespace do MDF-e
-MDFE_NS = "http://www.portalfiscal.inf.br/mdfe"
+from sefaz_service.core.uf_utils import uf_to_cuf, mdfe_url_consulta
 
-# Namespace base do WSDL
-MDFE_CONSULTA_WSDL_NS = "http://www.portalfiscal.inf.br/mdfe/wsdl/MDFeConsulta"
-
-# códigos de UF (mesmos da NFe / IBGE)
-UF_CODIGOS = {
-    "RO": "11",
-    "AC": "12",
-    "AM": "13",
-    "RR": "14",
-    "PA": "15",
-    "AP": "16",
-    "TO": "17",
-    "MA": "21",
-    "PI": "22",
-    "CE": "23",
-    "RN": "24",
-    "PB": "25",
-    "PE": "26",
-    "AL": "27",
-    "SE": "28",
-    "BA": "29",
-    "MG": "31",
-    "ES": "32",
-    "RJ": "33",
-    "SP": "35",
-    "PR": "41",
-    "SC": "42",
-    "RS": "43",
-    "MS": "50",
-    "MT": "51",
-    "GO": "52",
-    "DF": "53",
-}
+MDFe_NS = "http://www.portalfiscal.inf.br/mdfe"
+SOAP_ENV_NS = "http://www.w3.org/2003/05/soap-envelope"
+MDFe_WSDL_CONSULTA = "http://www.portalfiscal.inf.br/mdfe/wsdl/MDFeConsulta"
 
 
 @dataclass
-class MDFeConsultaResult:
-    status: Optional[int]
-    motivo: Optional[str]
+class MDFeResultado:
+    status: str
+    motivo: str
     xml_envio: str
     xml_retorno: str
 
 
-def _resolver_url_mdfe_consulta(ambiente: str) -> str:
-    """
-    Endpoint do serviço MDFeConsulta (SVRS).
-    ambiente: "1"=produção, "2"=homologação.
-    """
-    ambiente = "1" if ambiente == "1" else "2"
+def _monta_xml_consulta(
+    uf: str,
+    ambiente: Literal["1", "2"],
+    chave: str,
+) -> str:
+    if len(chave) != 44 or not chave.isdigit():
+        raise ValueError("chMDFe deve ter 44 dígitos numéricos")
 
-    if ambiente == "1":
-        return "https://mdfe.svrs.rs.gov.br/ws/MDFeConsulta/MDFeConsulta.asmx"
-    else:
-        return "https://mdfe-homologacao.svrs.rs.gov.br/ws/MDFeConsulta/MDFeConsulta.asmx"
-
-
-def _montar_xml_cons_sit_mdfe(tp_amb: str, chave_mdfe: str, versao: str = "3.00") -> str:
-    """
-    Monta o XML interno do consSitMDFe:
-
-        <consSitMDFe versao="3.00" xmlns="http://www.portalfiscal.inf.br/mdfe">
-            <tpAmb>1</tpAmb>
-            <xServ>CONSULTAR</xServ>
-            <chMDFe>...</chMDFe>
-        </consSitMDFe>
-    """
-    return (
-        f'<consSitMDFe versao="{versao}" xmlns="{MDFE_NS}">'
-        f"<tpAmb>{tp_amb}</tpAmb>"
-        "<xServ>CONSULTAR</xServ>"
-        f"<chMDFe>{chave_mdfe}</chMDFe>"
-        "</consSitMDFe>"
+    root = etree.Element(
+        "consSitMDFe",
+        nsmap={None: MDFe_NS},
+        versao="3.00",
     )
+    etree.SubElement(root, "tpAmb").text = str(ambiente)
+    etree.SubElement(root, "xServ").text = "CONSULTAR"
+    etree.SubElement(root, "chMDFe").text = chave
+
+    xml_bytes = etree.tostring(
+        root, encoding="utf-8", xml_declaration=True, pretty_print=False
+    )
+    return xml_bytes.decode("utf-8")
+
+
+def _monta_envelope_soap(xml_corpo: str, uf: str) -> str:
+    cuf = uf_to_cuf(uf)
+
+    nsmap_env = {
+        "soap12": SOAP_ENV_NS,
+        "xsi": "http://www.w3.org/2001/XMLSchema-instance",
+        "xsd": "http://www.w3.org/2001/XMLSchema",
+    }
+    envelope = etree.Element(etree.QName(SOAP_ENV_NS, "Envelope"), nsmap=nsmap_env)
+
+    header = etree.SubElement(envelope, etree.QName(SOAP_ENV_NS, "Header"))
+    cabec = etree.SubElement(header, "mdfeCabecMsg", xmlns=MDFe_WSDL_CONSULTA)
+    etree.SubElement(cabec, "cUF").text = cuf
+    etree.SubElement(cabec, "versaoDados").text = "3.00"
+
+    body = etree.SubElement(envelope, etree.QName(SOAP_ENV_NS, "Body"))
+    dados_msg = etree.SubElement(body, "mdfeDadosMsg", xmlns=MDFe_WSDL_CONSULTA)
+
+    corpo_root = etree.fromstring(xml_corpo.encode("utf-8"))
+    dados_msg.append(corpo_root)
+
+    xml_bytes = etree.tostring(
+        envelope, encoding="utf-8", xml_declaration=True, pretty_print=False
+    )
+    return xml_bytes.decode("utf-8")
+
+
+def _extrai_status_motivo(xml_retorno: str) -> tuple[str, str]:
+    try:
+        root = etree.fromstring(xml_retorno.encode("utf-8"))
+    except Exception:
+        return "", ""
+
+    cstat = ""
+    xmotivo = ""
+    for el in root.iter():
+        tag = etree.QName(el).localname
+        if tag == "cStat" and not cstat:
+            cstat = (el.text or "").strip()
+        elif tag == "xMotivo" and not xmotivo:
+            xmotivo = (el.text or "").strip()
+    return cstat, xmotivo
 
 
 def sefaz_mdfe_consulta(
     uf: str,
-    chave_mdfe: str,
-    pfx_path: str,
-    pfx_password: str,
-    ambiente: str = "2",
-    versao: str = "3.00",
-) -> MDFeConsultaResult:
-    """
-    Consulta situação do MDF-e (MDFeConsultaMDF) usando certificado A1 (.pfx)
-    via SOAP 1.2.
+    ambiente: Literal["1", "2"],
+    chave: str,
+    certificado: str,
+    senha: str,
+) -> MDFeResultado:
+    xml_corpo = _monta_xml_consulta(uf=uf, ambiente=ambiente, chave=chave)
+    xml_envelope = _monta_envelope_soap(xml_corpo, uf=uf)
 
-    - uf: sigla da UF do emitente (ex.: 'AC')
-    - chave_mdfe: chave completa (44 dígitos) do MDF-e
-    - ambiente: "1"=produção, "2"=homologação
-    """
-    tp_amb = "1" if ambiente == "1" else "2"
+    url = mdfe_url_consulta(ambiente)
 
-    uf = (uf or "").upper()
-    cuf = UF_CODIGOS.get(uf, "43")  # default RS se vier algo esquisito
+    headers = {
+        "Content-Type": 'application/soap+xml; charset="utf-8"',
+    }
 
-    # XML interno (é isso que mostramos no retorno)
-    xml_dados = _montar_xml_cons_sit_mdfe(tp_amb=tp_amb, chave_mdfe=chave_mdfe, versao=versao)
-    xml_envio = xml_dados
-
-    # ==== SOAP 1.2 ====  (igual ao XML que funciona no seu teste)
-    envelope = f"""<?xml version="1.0" encoding="utf-8"?>
-    <soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                     xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-                     xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">
-      <soap12:Body>
-        <mdfeDadosMsg xmlns="{MDFE_CONSULTA_WSDL_NS}">
-          {xml_dados}
-        </mdfeDadosMsg>
-      </soap12:Body>
-    </soap12:Envelope>
-    """
-
-    url = _resolver_url_mdfe_consulta(ambiente=ambiente)
-
-    resp = post(
+    resp = requests_pkcs12.post(
         url,
-        data=envelope.encode("utf-8"),
-        pkcs12_filename=pfx_path,
-        pkcs12_password=pfx_password,
-        headers={
-            # SOAP 1.2 -> action vai no próprio Content-Type
-            "Content-Type": (
-                f'application/soap+xml; charset="utf-8"; '
-                f'action="{MDFE_CONSULTA_WSDL_NS}/mdfeConsultaMDF"'
-            ),
-        },
+        data=xml_envelope.encode("utf-8"),
+        headers=headers,
+        pkcs12_filename=certificado,
+        pkcs12_password=senha,
         timeout=30,
-        verify=False,  # em produção, o ideal é usar verify=True
     )
 
     xml_retorno = resp.text
+    cstat, xmotivo = _extrai_status_motivo(xml_retorno)
 
-    # Tenta extrair cStat / xMotivo
-    status_int: Optional[int] = None
-    motivo_str: Optional[str] = None
-
-    try:
-        root = etree.fromstring(xml_retorno.encode("utf-8"))
-        ns = {"mdfe": MDFE_NS}
-
-        cstat_el = root.find(".//mdfe:cStat", namespaces=ns)
-        xmot_el = root.find(".//mdfe:xMotivo", namespaces=ns)
-
-        if cstat_el is not None and cstat_el.text:
-            try:
-                status_int = int(cstat_el.text.strip())
-            except ValueError:
-                status_int = None
-
-        if xmot_el is not None and xmot_el.text:
-            motivo_str = xmot_el.text.strip()
-    except Exception:
-        # se der erro de parse, devolvemos só o XML bruto
-        pass
-
-    return MDFeConsultaResult(
-        status=status_int,
-        motivo=motivo_str,
-        xml_envio=xml_envio,
+    return MDFeResultado(
+        status=cstat or str(resp.status_code),
+        motivo=xmotivo or f"Retorno HTTP {resp.status_code}",
+        xml_envio=xml_envelope,
         xml_retorno=xml_retorno,
     )

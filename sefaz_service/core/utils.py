@@ -5,6 +5,9 @@ from typing import Optional
 
 from lxml import etree
 
+import gzip
+import base64
+
 MDFE_NS = "http://www.portalfiscal.inf.br/mdfe"
 
 UF_CODIGOS = {
@@ -86,3 +89,17 @@ def extrair_chave_mdfe(xml: str) -> Optional[str]:
     if id_attr.startswith("MDFe"):
         return id_attr[4:]
     return id_attr or None
+
+
+def compactar_gzip_base64(xml: str) -> str:
+    """
+    Compacta o XML em GZip e retorna em Base64 (string ASCII).
+    Este é exatamente o formato esperado em mdfeDadosMsg.
+    """
+    if not xml:
+        return ""
+    # sempre UTF-8
+    raw = xml.encode("utf-8")
+    gz = gzip.compress(raw)
+    b64 = base64.b64encode(gz).decode("ascii")
+    return b64

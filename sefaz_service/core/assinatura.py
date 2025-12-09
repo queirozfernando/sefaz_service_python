@@ -202,3 +202,11 @@ def assinar_mdfe_xml(xml: str, pfx_path: str, pfx_password: str) -> str:
     Assina um MDFe (modelo 58).
     """
     return _assinar_xml_generico(xml, "infMDFe", pfx_path, pfx_password)
+
+
+def assinar_mdfe_evento_xml(xml: str, pfx_path: str, pfx_password: str) -> str:
+    """
+    Assina um EVENTO de MDFe (ex.: cancelamento - infEvento).
+    """
+    return _assinar_xml_generico(xml, "infEvento", pfx_path, pfx_password)
+
